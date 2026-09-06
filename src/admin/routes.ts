@@ -1,0 +1,186 @@
+import crypto from "node:crypto";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { Logger } from "../logger.js";
+import { EFFORT_LEVELS, type SettingsStore, type SettingsPatch } from "../config.js";
+import type { McpHub } from "../mcp/hub.js";
+import type { VoiceAgent, ConversationState } from "../agent/agent.js";
+import type { UsageStore } from "../usage/usage-store.js";
+import type { SessionStore } from "../calls/session.js";
+import { MODEL_PRICES } from "../usage/pricing.js";
+import { renderAdminPage } from "./ui.js";
+
+export interface AdminDeps {
+  settings: SettingsStore;
+  hub: McpHub;
+  agent: VoiceAgent;
+  usage: UsageStore;
+  sessions: SessionStore;
+  logger: Logger;
+  adminUser: string;
+  adminPassword: string;
+  publicBaseUrl: string;
+  webhookSecret: string;
+  timeZone: string;
+}
+
+export const TTS_VOICES = [
+  { id: "", label: "ברירת מחדל (Google he-IL-Standard-D, ללא עלות)" },
+  ...["Charon", "Puck", "Fenrir", "Orus", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Algenib", "Rasalgethi", "Alnilam", "Schedar", "Achird", "Zubenelgenubi", "Sadachbia", "Sadaltager"].map((v) => ({ id: v, label: `${v} (Gemini, גבר, בתשלום)` })),
+  ...["Kore", "Zephyr", "Leda", "Aoede", "Callirrhoe", "Autonoe", "Despina", "Erinome", "Laomedeia", "Achernar", "Gacrux", "Pulcherrima", "Vindemiatrix", "Sulafat"].map((v) => ({ id: v, label: `${v} (Gemini, אישה, בתשלום)` })),
+];
+
+function timingSafeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
+function sinceFor(range: string | undefined, timeZone: string): Date | null {
+  const now = new Date();
+  switch (range) {
+    case "today": {
+      // Midnight in the configured time zone
+      const parts = new Intl.DateTimeFormat("en-US", { timeZone, hour12: false, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(now);
+      const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+      const elapsedMs = ((get("hour") % 24) * 3600 + get("minute") * 60 + get("second")) * 1000;
+      return new Date(now.getTime() - elapsedMs);
+    }
+    case "7d":
+      return new Date(now.getTime() - 7 * 86_400_000);
+    case "30d":
+      return new Date(now.getTime() - 30 * 86_400_000);
+    default:
+      return null;
+  }
+}
+
+export function registerAdminRoutes(app: FastifyInstance, d: AdminDeps): void {
+  const enabled = d.adminUser.length > 0 && d.adminPassword.length > 0;
+  const chats = new Map<string, ConversationState>();
+
+  const requireAuth = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!enabled) {
+      return reply.code(503).type("text/plain; charset=utf-8").send("ממשק הניהול כבוי. הגדירו ADMIN_USER ו-ADMIN_PASSWORD בקובץ .env והפעילו מחדש.");
+    }
+    const header = request.headers.authorization ?? "";
+    const [scheme, encoded] = header.split(" ");
+    let ok = false;
+    if (scheme === "Basic" && encoded) {
+      const decoded = Buffer.from(encoded, "base64").toString("utf8");
+      const idx = decoded.indexOf(":");
+      const user = decoded.slice(0, idx);
+      const pass = decoded.slice(idx + 1);
+      ok = timingSafeEqual(user, d.adminUser) && timingSafeEqual(pass, d.adminPassword);
+    }
+    if (!ok) {
+      return reply.code(401).header("WWW-Authenticate", 'Basic realm="MAINBOT admin", charset="UTF-8"').send("Unauthorized");
+    }
+  };
+
+  app.get("/admin", { preHandler: requireAuth }, async (_req, reply) => {
+    return reply.type("text/html; charset=utf-8").send(renderAdminPage());
+  });
+
+  app.get("/admin/api/state", { preHandler: requireAuth }, async () => {
+    const tools = d.hub.tools();
+    return {
+      settings: d.settings.view(),
+      servers: d.hub.status().map((s) => ({ ...s, tools: tools.filter((t) => t.server === s.name).map((t) => ({ name: t.name, fullName: t.fullName, kind: t.kind, alwaysLoad: t.alwaysLoad, description: t.description.slice(0, 160) })) })),
+      models: MODEL_PRICES,
+      effortLevels: EFFORT_LEVELS,
+      voices: TTS_VOICES,
+      publicBaseUrl: d.publicBaseUrl,
+      webhookUrl: `${d.publicBaseUrl || "https://<your-domain>"}/pbx/technoline/${d.webhookSecret || "<WEBHOOK_SECRET>"}`,
+      activeCalls: d.sessions.active().map((s) => ({ callId: s.callId, phone: s.phone, startedAt: s.startedAt, turns: s.turns, thinking: !!s.pending })),
+      systemPromptChars: d.agent.getSystemPrompt().length,
+      toolCount: tools.length,
+    };
+  });
+
+  app.put("/admin/api/settings", { preHandler: requireAuth }, async (request, reply) => {
+    try {
+      const patch = (request.body ?? {}) as SettingsPatch;
+      d.settings.update(patch);
+      d.logger.info({ keys: Object.keys(patch) }, "settings updated from admin UI");
+      return { ok: true, settings: d.settings.view() };
+    } catch (err) {
+      return reply.code(400).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get("/admin/api/usage", { preHandler: requireAuth }, async (request) => {
+    const { range } = request.query as { range?: string };
+    const since = sinceFor(range, d.timeZone);
+    return { range: range ?? "all", aggregate: d.usage.aggregate(since, d.timeZone), calls: d.usage.calls(100, since) };
+  });
+
+  app.get("/admin/api/calls/:callId", { preHandler: requireAuth }, async (request) => {
+    const { callId } = request.params as { callId: string };
+    return { callId, events: d.usage.callEvents(callId) };
+  });
+
+  app.get("/admin/api/prompt", { preHandler: requireAuth }, async (_req, reply) => {
+    return reply.type("text/plain; charset=utf-8").send(d.agent.getSystemPrompt());
+  });
+
+  /** Text chat with the same agent - lets the admin test tools without a phone. */
+  app.post("/admin/api/chat", { preHandler: requireAuth }, async (request) => {
+    const body = (request.body ?? {}) as { message?: string; sessionId?: string; reset?: boolean };
+    const sessionId = body.sessionId || `admin-${crypto.randomUUID()}`;
+    if (body.reset) chats.delete(sessionId);
+    let conv = chats.get(sessionId);
+    if (!conv) {
+      conv = d.agent.newConversation(sessionId, "admin-chat");
+      chats.set(sessionId, conv);
+      if (chats.size > 50) chats.delete(chats.keys().next().value as string);
+    }
+    const message = (body.message ?? "").trim();
+    if (!message) return { sessionId, text: "", endCall: false };
+    const reply = await d.agent.respond(conv, message, { phone: "admin-chat", channel: "צ'אט בדיקה מממשק הניהול (טקסט)" });
+    if (reply.endCall) chats.delete(sessionId);
+    return { sessionId, ...reply };
+  });
+
+  app.post("/admin/api/mcp/:name/reconnect", { preHandler: requireAuth }, async (request) => {
+    const { name } = request.params as { name: string };
+    await d.hub.reconnect(name);
+    return { ok: true, servers: d.hub.status() };
+  });
+
+  app.post("/admin/api/mcp/:name/logout", { preHandler: requireAuth }, async (request) => {
+    const { name } = request.params as { name: string };
+    d.hub.logout(name);
+    return { ok: true };
+  });
+
+  app.get("/admin/mcp/:name/login", { preHandler: requireAuth }, async (request, reply) => {
+    const { name } = request.params as { name: string };
+    try {
+      const url = await d.hub.beginLogin(name);
+      return reply.redirect(url);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === "already-authorized") return reply.redirect("/admin?login=ok");
+      d.logger.error({ server: name, err: msg }, "OAuth login could not start");
+      return reply.redirect(`/admin?login=error&message=${encodeURIComponent(msg)}`);
+    }
+  });
+
+  // No basic-auth here: the browser arrives from the authorization server. The OAuth
+  // state parameter (checked by the hub) binds the callback to the login we started.
+  app.get("/oauth/callback/:name", async (request, reply) => {
+    const { name } = request.params as { name: string };
+    const q = request.query as { code?: string; state?: string; error?: string; error_description?: string };
+    if (q.error) return reply.redirect(`/admin?login=error&message=${encodeURIComponent(q.error_description ?? q.error)}`);
+    if (!q.code) return reply.code(400).send("Missing authorization code");
+    try {
+      await d.hub.finishLogin(name, q.code, q.state);
+      return reply.redirect("/admin?login=ok");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      d.logger.error({ server: name, err: msg }, "OAuth callback failed");
+      return reply.redirect(`/admin?login=error&message=${encodeURIComponent(msg)}`);
+    }
+  });
+}

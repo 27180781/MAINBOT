@@ -1,0 +1,34 @@
+{
+  "name": "mainbot-phone-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hebrew voice assistant on Claude for the Technoline PBX, connected to remote MCP servers (CRM, Yemot, Lovable, GitHub, Clicker)",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "mcp:login": "tsx src/cli/mcp-login.ts",
+    "mcp:tools": "tsx src/cli/mcp-tools.ts",
+    "chat": "tsx src/cli/chat.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.12.3",
+    "pino": "^10.3.1",
+    "pino-pretty": "^13.1.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.0"
+  }
+}
