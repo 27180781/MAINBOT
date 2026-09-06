@@ -82,8 +82,8 @@ export function splitForSpeech(raw: string): SpeechSegment[] {
   return out.filter((s) => s.value.trim().length > 0);
 }
 
-/** 7-12 consecutive digits that are not part of a decimal number or a date. */
-const LONG_DIGITS_RE = /(?<![\d.,])\d{7,12}(?![\d.,]\d)/g;
+/** 7-12 consecutive digits that are not part of a decimal number, a date or an amount of money. */
+const LONG_DIGITS_RE = /(?<![\d.,])\d{7,12}(?!\d)(?![.,]\d)(?!\s*(?:שקל|ש"ח|דולר|אירו|אחוז|%))/g;
 
 /** Sentence-aware chunking so each TTS item stays short. */
 export function chunkSentences(text: string, max = MAX_SEGMENT_CHARS): string[] {
