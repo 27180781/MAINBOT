@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAINBOT - בדיקת שיחה קולית</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif; margin: 0; padding: 24px; background: #f6f7f9; color: #1f2937; }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  input { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; }
+  button { padding: 8px 14px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; font-size: 14px; cursor: pointer; }
+  button.secondary { background: #64748b; }
+  button:disabled { opacity: .5; cursor: default; }
+  #state { font-size: 14px; color: #475569; }
+  #log { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; min-height: 240px; max-height: 60vh; overflow: auto; }
+  .msg { padding: 6px 10px; border-radius: 10px; margin: 6px 0; max-width: 85%; white-space: pre-wrap; }
+  .user { background: #dbeafe; margin-right: auto; }
+  .agent { background: #f1f5f9; margin-left: auto; }
+  .sys { color: #64748b; font-size: 12px; }
+  .lat { font-size: 12px; color: #64748b; margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>MAINBOT - בדיקת שיחה קולית בזמן אמת</h1>
+  <div class="row">
+    <input id="key" placeholder="מפתח גישה (WEB_ACCESS_KEY)" type="password">
+    <input id="name" placeholder="שם" value="נסים">
+    <input id="phone" placeholder="טלפון (לזיהוי בלוג)" value="">
+    <button id="connect">התחבר ודבר</button>
+    <button id="disconnect" class="secondary" disabled>נתק</button>
+  </div>
+  <div class="row"><span id="state">לא מחובר</span></div>
+  <div id="log"></div>
+  <div class="lat" id="lat"></div>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.min.js"></script>
+<script>
+(function () {
+  var LK = window.LivekitClient;
+  var room = null;
+  var logEl = document.getElementById('log');
+  var stateEl = document.getElementById('state');
+  var latEl = document.getElementById('lat');
+  var segments = {};
+  var lastUserEnd = null;
+
+  function add(cls, text, id) {
+    var el = id && segments[id];
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'msg ' + cls;
+      logEl.appendChild(el);
+      if (id) segments[id] = el;
+    }
+    el.textContent = text;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function sys(text) { add('sys', text); }
+  function setState(s) { stateEl.textContent = s; }
+
+  async function connect() {
+    var key = document.getElementById('key').value.trim();
+    var name = document.getElementById('name').value.trim();
+    var phone = document.getElementById('phone').value.trim();
+    if (!key) { sys('חסר מפתח גישה'); return; }
+    document.getElementById('connect').disabled = true;
+    try {
+      var res = await fetch('/token?key=' + encodeURIComponent(key) + '&name=' + encodeURIComponent(name) + '&phone=' + encodeURIComponent(phone));
+      if (!res.ok) { sys('שגיאת טוקן: ' + (await res.text())); document.getElementById('connect').disabled = false; return; }
+      var t = await res.json();
+      room = new LK.Room({ adaptiveStream: true, dynacast: true });
+      room.on(LK.RoomEvent.TrackSubscribed, function (track) {
+        if (track.kind === 'audio') { var a = track.attach(); a.autoplay = true; document.body.appendChild(a); }
+      });
+      room.on(LK.RoomEvent.ParticipantAttributesChanged, function (changed, p) {
+        if (changed['lk.agent.state']) setState('הסוכן: ' + changed['lk.agent.state']);
+      });
+      room.on(LK.RoomEvent.Disconnected, function () { setState('מנותק'); document.getElementById('connect').disabled = false; document.getElementById('disconnect').disabled = true; });
+      // Transcriptions arrive as text streams on the lk.transcription topic (livekit-client 2.x).
+      room.registerTextStreamHandler('lk.transcription', async function (reader, participantInfo) {
+        var attrs = reader.info.attributes || {};
+        var isAgent = participantInfo.identity !== room.localParticipant.identity;
+        var id = reader.info.id || attrs['lk.segment_id'];
+        var text = '';
+        for await (var chunk of reader) { text += chunk; add(isAgent ? 'agent' : 'user', text, id); }
+        var final = attrs['lk.transcription_final'] === 'true';
+        if (!isAgent && final) lastUserEnd = performance.now();
+        if (isAgent && lastUserEnd) { latEl.textContent = 'זמן מסוף הדיבור שלך לתחילת התשובה (ברירת מחדל מהדפדפן, בערך): ' + Math.round(performance.now() - lastUserEnd) + ' ms'; lastUserEnd = null; }
+      });
+      await room.connect(t.url, t.token);
+      await room.localParticipant.setMicrophoneEnabled(true);
+      setState('מחובר לחדר ' + t.room + ' - דברו חופשי, אפשר לקטוע באמצע');
+      document.getElementById('disconnect').disabled = false;
+      sys('מחובר. אם הסוכן לא עונה תוך כמה שניות, בדקו שה-worker רץ (python agent.py dev) ושה-LIVEKIT_URL זהה.');
+    } catch (err) {
+      sys('שגיאה: ' + (err && err.message ? err.message : err));
+      document.getElementById('connect').disabled = false;
+    }
+  }
+  async function disconnect() { if (room) { await room.disconnect(); room = null; } }
+  document.getElementById('connect').addEventListener('click', connect);
+  document.getElementById('disconnect').addEventListener('click', disconnect);
+})();
+</script>
+</body>
+</html>

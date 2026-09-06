@@ -380,6 +380,36 @@ export class McpHub {
     this.emit();
   }
 
+  /**
+   * Connection details another process (the realtime voice agent) can use to talk to the
+   * same MCP servers with the same credentials: static headers plus a fresh OAuth access
+   * token. Tokens close to expiry are refreshed first through the SDK.
+   */
+  async credentials(): Promise<Array<{ name: string; label: string; url: string; state: ServerState; headers: Record<string, string>; expiresInSeconds: number | null }>> {
+    const out: Array<{ name: string; label: string; url: string; state: ServerState; headers: Record<string, string>; expiresInSeconds: number | null }> = [];
+    for (const c of this.conns.values()) {
+      if (!c.config.enabled) continue;
+      const headers = staticHeaders(c.config);
+      let expiresInSeconds: number | null = null;
+      const provider = this.providerFor(c);
+      if (provider) {
+        const left = provider.secondsUntilExpiry();
+        if (provider.hasTokens() && provider.tokens()?.refresh_token && left !== null && left < 120) {
+          try {
+            await auth(provider, { serverUrl: c.config.url, scope: oauthScope(c.config) });
+          } catch (err) {
+            this.log.warn({ server: c.config.name, err: errorMessage(err) }, "token refresh for shared credentials failed");
+          }
+        }
+        const token = provider.tokens()?.access_token;
+        if (token) headers.Authorization = `Bearer ${token}`;
+        expiresInSeconds = provider.secondsUntilExpiry();
+      }
+      out.push({ name: c.config.name, label: c.config.label ?? c.config.name, url: c.config.url, state: c.state, headers, expiresInSeconds });
+    }
+    return out;
+  }
+
   logout(name: string): void {
     const c = this.conns.get(name);
     if (!c) return;

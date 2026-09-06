@@ -67,6 +67,8 @@ export const env = {
   trustProxy: envBool("TRUST_PROXY", true),
   /** Bearer key for the text-chat API used by the CRM (empty = API disabled). */
   chatApiKey: process.env.CHAT_API_KEY ?? "",
+  /** Bearer key for /internal/* endpoints used by sibling services such as the realtime voice agent. */
+  internalApiKey: process.env.INTERNAL_API_KEY ?? "",
   chatCorsOrigins: (process.env.CHAT_CORS_ORIGINS ?? "")
     .split(",")
     .map((s) => s.trim())

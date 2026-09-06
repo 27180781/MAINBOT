@@ -115,6 +115,16 @@ export class FileOAuthProvider implements OAuthClientProvider {
     return !!this.data.tokens?.access_token;
   }
 
+  /** Seconds until the stored access token expires (null when unknown or no token). */
+  secondsUntilExpiry(): number | null {
+    const t = this.data.tokens;
+    if (!t?.access_token) return null;
+    if (!t.expires_in || !this.data.tokensSavedAt) return null;
+    const savedAt = Date.parse(this.data.tokensSavedAt);
+    if (!Number.isFinite(savedAt)) return null;
+    return Math.round((savedAt + Number(t.expires_in) * 1000 - Date.now()) / 1000);
+  }
+
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
     this.data.pendingAuthorizationUrl = authorizationUrl.toString();
     this.write();

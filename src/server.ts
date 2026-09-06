@@ -1,4 +1,6 @@
 import http from "node:http";
+import fs from "node:fs";
+import crypto from "node:crypto";
 import Fastify from "fastify";
 import Anthropic from "@anthropic-ai/sdk";
 import { env, SettingsStore } from "./config.js";
@@ -129,6 +131,49 @@ export async function buildServer() {
     webhookSecret: env.webhookSecret,
     timeZone: env.timezone,
     instructionsPath: env.instructionsPath,
+  });
+
+  // Internal API for sibling services (the realtime voice agent): shared MCP credentials,
+  // standing rules and business instructions, so both agents behave the same.
+  app.get("/internal/agent-config", async (request, reply) => {
+    const key = env.internalApiKey;
+    const header = request.headers.authorization ?? "";
+    const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+    if (key.length < 16) return reply.code(503).send({ error: "set INTERNAL_API_KEY (at least 16 characters) to enable /internal endpoints" });
+    if (!token || token.length !== key.length || !crypto.timingSafeEqual(Buffer.from(token), Buffer.from(key))) return reply.code(401).send({ error: "unauthorized" });
+    const s = settings.get();
+    let instructions = "";
+    try {
+      if (fs.existsSync(env.instructionsPath)) instructions = fs.readFileSync(env.instructionsPath, "utf8");
+    } catch {
+      instructions = "";
+    }
+    return reply.header("Cache-Control", "no-store").send({
+      servers: await hub.credentials(),
+      alwaysLoad: Object.fromEntries(hub.serverConfigs().map((c) => [c.name, c.alwaysLoad])),
+      rules: rules.list(),
+      instructions,
+      extraInstructions: s.extraInstructions,
+      allowedPhones: s.allowedPhones,
+      blockedTools: s.blockedTools,
+      confirmWrites: s.confirmWrites,
+      model: s.model,
+    });
+  });
+
+  app.post("/internal/rules", async (request, reply) => {
+    const key = env.internalApiKey;
+    const header = request.headers.authorization ?? "";
+    const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+    if (key.length < 16) return reply.code(503).send({ error: "set INTERNAL_API_KEY (at least 16 characters) to enable /internal endpoints" });
+    if (!token || token.length !== key.length || !crypto.timingSafeEqual(Buffer.from(token), Buffer.from(key))) return reply.code(401).send({ error: "unauthorized" });
+    const body = (request.body ?? {}) as { text?: string; source?: string };
+    try {
+      const rule = rules.add(String(body.text ?? ""), typeof body.source === "string" && body.source ? body.source.slice(0, 64) : "realtime");
+      return { ok: true, rule };
+    } catch (err) {
+      return reply.code(400).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   const chatSessions = registerChatApi(app, {

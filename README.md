@@ -370,5 +370,7 @@ docker compose logs -f
 - [docs/GO-LIVE-CHECKLIST.md](docs/GO-LIVE-CHECKLIST.md) – רשימת בדיקה לפני שמחברים את המספר האמיתי.
 - [docs/CAPROVER.md](docs/CAPROVER.md) – פריסה ב-CapRover עם פריסה אוטומטית מ-GitHub.
 - [docs/technoline-api-module.md](docs/technoline-api-module.md) – הפרוטוקול של המרכזייה.
+- [docs/CRM-INTEGRATION.md](docs/CRM-INTEGRATION.md) – אותו עוזר כצ'אט בתוך ה-CRM (Chat API).
+- [realtime/README.md](realtime/README.md) – העוזר הקולי בזמן אמת (LiveKit Agents, שיחה זורמת עם קטיעות): שלב א' בדפדפן, שלב ב' בטלפון דרך `routing_ip` של ימות.
 
 </div>

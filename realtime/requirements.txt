@@ -1,0 +1,5 @@
+livekit-agents[anthropic,elevenlabs,silero,soniox,mcp]~=1.8.0
+livekit-plugins-noise-cancellation~=0.3.0
+livekit-api~=1.2
+aiohttp>=3.10
+python-dotenv>=1.0
