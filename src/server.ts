@@ -6,6 +6,7 @@ import { logger } from "./logger.js";
 import { loadMcpConfig } from "./mcp/config.js";
 import { McpHub } from "./mcp/hub.js";
 import { VoiceAgent } from "./agent/agent.js";
+import { RulesStore } from "./agent/rules.js";
 import { UsageStore } from "./usage/usage-store.js";
 import { SessionStore } from "./calls/session.js";
 import { registerTechnolineRoutes } from "./pbx/technoline/route.js";
@@ -37,6 +38,7 @@ export async function buildServer() {
 
   const settings = new SettingsStore(env.dataDir);
   const usage = new UsageStore(env.dataDir);
+  const rules = new RulesStore(env.dataDir);
   const sessions = new SessionStore(env.sessionTtlMs);
   const mcpConfig = loadMcpConfig(env.mcpConfigPath);
   const baseUrl = env.publicBaseUrl || `http://localhost:${env.port}`;
@@ -53,6 +55,7 @@ export async function buildServer() {
     hub,
     settings,
     usage,
+    rules,
     logger,
     instructionsPath: env.instructionsPath,
     timeZone: env.timezone,
@@ -92,6 +95,7 @@ export async function buildServer() {
     hub,
     agent,
     usage,
+    rules,
     sessions,
     logger,
     adminUser: env.adminUser,
@@ -99,6 +103,7 @@ export async function buildServer() {
     publicBaseUrl: env.publicBaseUrl,
     webhookSecret: env.webhookSecret,
     timeZone: env.timezone,
+    instructionsPath: env.instructionsPath,
   });
 
   const sweeper = setInterval(() => {
@@ -112,7 +117,7 @@ export async function buildServer() {
     await hub.stop();
   });
 
-  return { app, hub, agent, settings, usage, sessions, flow };
+  return { app, hub, agent, settings, usage, rules, sessions, flow };
 }
 
 async function main(): Promise<void> {

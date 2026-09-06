@@ -5,46 +5,75 @@
       "name": "crm",
       "label": "CRM חוויה בקליק",
       "description": "לידים, לקוחות, תיבת פניות, יומן, תשלומים, מיילים ו-וואטסאפ",
-      "url": "https://REPLACE-WITH-YOUR-CRM-MCP-URL/mcp",
-      "auth": { "type": "oauth" },
+      "url": "https://vrlouymfurzozisyhrbx.supabase.co/functions/v1/mcp",
+      "auth": {
+        "type": "oauth"
+      },
       "enabled": true,
-      "alwaysLoad": ["search_contacts", "get_contact", "list_unanswered", "inbox_summary", "daily_focus", "check_availability"]
+      "alwaysLoad": [
+        "search_contacts",
+        "get_contact",
+        "list_unanswered",
+        "inbox_summary",
+        "daily_focus",
+        "check_availability"
+      ]
     },
     {
       "name": "yemot",
       "label": "ימות המשיח",
       "description": "קווי טלפון, שלוחות, קמפיינים, SMS, דוחות שיחות",
       "url": "https://REPLACE-WITH-YOUR-YEMOT-MCP-URL/mcp",
-      "auth": { "type": "oauth" },
+      "auth": {
+        "type": "oauth"
+      },
       "enabled": true,
-      "alwaysLoad": ["get_system_overview", "list_lines", "list_active_calls"]
+      "alwaysLoad": [
+        "get_system_overview",
+        "list_lines",
+        "list_active_calls"
+      ]
     },
     {
       "name": "clicker",
       "label": "מערכת המשחקים (חוויה בקליק)",
       "description": "משחקי טריוויה וסקרים, שקפים, משתתפים, רישיונות",
-      "url": "https://REPLACE-WITH-YOUR-GAMES-MCP-URL/mcp",
-      "auth": { "type": "oauth" },
+      "url": "https://oousxptmdrrkybadikec.supabase.co/functions/v1/mcp",
+      "auth": {
+        "type": "oauth"
+      },
       "enabled": true,
-      "alwaysLoad": ["list_games", "whoami"]
+      "alwaysLoad": [
+        "list_games",
+        "whoami"
+      ]
     },
     {
       "name": "lovable",
       "label": "Lovable",
       "description": "פרויקטי פיתוח, הודעות לסוכן, פריסה, אנליטיקס",
       "url": "https://mcp.lovable.dev/mcp",
-      "auth": { "type": "oauth" },
+      "auth": {
+        "type": "oauth"
+      },
       "enabled": true,
-      "alwaysLoad": ["list_projects"]
+      "alwaysLoad": [
+        "list_projects"
+      ]
     },
     {
       "name": "github",
       "label": "GitHub",
       "description": "מאגרי קוד, בקשות משיכה, issues",
       "url": "https://api.githubcopilot.com/mcp/",
-      "auth": { "type": "bearer", "tokenEnv": "GITHUB_TOKEN" },
+      "auth": {
+        "type": "bearer",
+        "tokenEnv": "GITHUB_TOKEN"
+      },
       "enabled": false,
-      "alwaysLoad": ["list_pull_requests"]
+      "alwaysLoad": [
+        "list_pull_requests"
+      ]
     }
   ]
 }

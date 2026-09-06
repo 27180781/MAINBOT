@@ -5,7 +5,8 @@ import { ConfirmationGate } from "../mcp/tool-policy.js";
 import type { Settings, SettingsStore } from "../config.js";
 import type { UsageStore } from "../usage/usage-store.js";
 import { buildSystemPrompt, buildCallContext, type CallContext } from "./prompt.js";
-import { LOCAL_TOOLS, END_CALL_TOOL } from "./local-tools.js";
+import { LOCAL_TOOLS, END_CALL_TOOL, LOCAL_TOOL_NAMES, LOCAL_WRITE_TOOLS, runLocalTool } from "./local-tools.js";
+import type { RulesStore } from "./rules.js";
 
 type BetaMessageParam = Anthropic.Beta.BetaMessageParam;
 type BetaToolUnion = Anthropic.Beta.BetaToolUnion;
@@ -36,6 +37,7 @@ export interface VoiceAgentOptions {
   hub: McpHub;
   settings: SettingsStore;
   usage: UsageStore;
+  rules: RulesStore;
   logger: Logger;
   instructionsPath: string;
   timeZone: string;
@@ -62,6 +64,7 @@ export class VoiceAgent {
     this.refresh();
     o.hub.onChange(() => this.refresh());
     o.settings.onChange(() => this.refresh());
+    o.rules.onChange(() => this.refresh());
   }
 
   /** Rebuilds the system prompt and tool list (called when servers or settings change). */
@@ -73,6 +76,7 @@ export class VoiceAgent {
       toolSearchEnabled: s.toolSearch,
       instructionsPath: this.o.instructionsPath,
       extraInstructions: s.extraInstructions,
+      rulesText: this.o.rules.renderForPrompt(),
     });
     this.toolsCache = this.buildTools(s, this.o.hub.tools());
     this.toolsCacheKey = `${s.toolSearch}:${s.toolSearchVariant}:${this.o.hub.tools().length}`;
@@ -204,7 +208,7 @@ export class VoiceAgent {
               return { type: "tool_result", tool_use_id: tu.id, content: "The call will end after your message is spoken." };
             }
             toolCalls.push(tu.name);
-            const r = await this.executeTool(conv, tu.name, input);
+            const r = LOCAL_TOOL_NAMES.has(tu.name) ? this.executeLocalTool(conv, tu.name, input) : await this.executeTool(conv, tu.name, input);
             return { type: "tool_result", tool_use_id: tu.id, content: r.text, ...(r.isError ? { is_error: true } : {}) };
           }),
         );
@@ -254,6 +258,22 @@ export class VoiceAgent {
     this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: fullName, server: tool.server, durationMs: Date.now() - started, ok: !outcome.isError });
     this.log.info({ callId: conv.callId, tool: fullName, ms: outcome.durationMs, error: outcome.isError }, "tool call");
     return outcome;
+  }
+
+  /** Rule tools: writes go through the same spoken-confirmation gate as MCP write tools. */
+  private executeLocalTool(conv: ConversationState, name: string, input: Record<string, unknown>): { text: string; isError: boolean } {
+    const isWrite = LOCAL_WRITE_TOOLS.has(name);
+    const decision = conv.gate.check({ name, annotations: { readOnlyHint: !isWrite, destructiveHint: isWrite } }, name, input, conv.turn, false);
+    if (!decision.allowed) {
+      this.log.info({ callId: conv.callId, tool: name, reason: decision.reason }, "local tool call gated");
+      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: name, server: "local", durationMs: 0, ok: true, blocked: true });
+      return { text: decision.message ?? "Not allowed.", isError: decision.reason !== "confirmation_required" };
+    }
+    const started = Date.now();
+    const r = runLocalTool(name, input, this.o.rules, `phone:${conv.phone}`);
+    this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: name, server: "local", durationMs: Date.now() - started, ok: !r.isError });
+    this.log.info({ callId: conv.callId, tool: name, error: r.isError }, "local tool call");
+    return r;
   }
 
   private describeError(err: unknown): string {

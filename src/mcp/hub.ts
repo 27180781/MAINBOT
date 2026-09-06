@@ -162,13 +162,10 @@ export class McpHub {
     await this.closeConnection(c);
     c.state = "connecting";
     c.error = undefined;
+    // An OAuth server is still tried without tokens: some servers accept anonymous
+    // clients, and the SDK raises UnauthorizedError (-> needs_login) when they don't.
     const provider = this.providerFor(c);
-    if (provider && !provider.hasTokens()) {
-      c.state = "needs_login";
-      c.error = "לא בוצעה התחברות (OAuth)";
-      this.log.warn({ server: c.config.name }, "MCP server needs OAuth login");
-      return;
-    }
+    if (provider && !provider.hasTokens()) this.log.info({ server: c.config.name }, "no OAuth tokens stored yet - trying to connect anyway");
     const kinds: Array<"http" | "sse"> = c.config.transport === "auto" ? ["http", "sse"] : [c.config.transport];
     let lastError: unknown;
     for (const kind of kinds) {

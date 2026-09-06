@@ -8,6 +8,8 @@ export interface PromptInputs {
   toolSearchEnabled: boolean;
   instructionsPath: string;
   extraInstructions: string;
+  /** Numbered standing rules from the RulesStore (empty when none). */
+  rulesText?: string;
 }
 
 /**
@@ -57,6 +59,11 @@ ${searchLine}
   ];
   if (domain) parts.push(`## הנחיות העסק\n${domain}`);
   if (i.extraInstructions.trim()) parts.push(`## הנחיות נוספות מהמנהל\n${i.extraInstructions.trim()}`);
+  parts.push(
+    `## כללים קבועים (הסקיל שלך)
+בעל העסק יכול ללמד אותך כללים קבועים בשיחה. כשהוא אומר "מעכשיו...", "תזכור ש...", "תמיד...", "אף פעם אל...", "תכתוב לעצמך כלל..." - נסח את הכלל במשפט קצר וכללי בעברית, הקרא אותו למתקשר, ואחרי שאישר שמור אותו עם add_rule (עדכון עם update_rule לפי מספר, מחיקה עם remove_rule). כלל שנשמר נכנס להנחיות שלך מהשיחה הבאה, אז בשיחה הנוכחית פעל לפיו מהזיכרון. אל תשמור ככלל דבר חד-פעמי, סיסמאות או פרטים אישיים של לקוחות.
+${(i.rulesText ?? "").trim() ? `הכללים הקבועים שנשמרו עד כה (חובה לפעול לפיהם):\n${(i.rulesText ?? "").trim()}` : "עדיין לא נשמרו כללים קבועים."}`,
+  );
   return parts.join("\n\n");
 }
 

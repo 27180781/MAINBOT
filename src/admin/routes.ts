@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { RulesStore } from "../agent/rules.js";
 import type { Logger } from "../logger.js";
 import { EFFORT_LEVELS, type SettingsStore, type SettingsPatch } from "../config.js";
 import type { McpHub } from "../mcp/hub.js";
@@ -14,6 +16,7 @@ export interface AdminDeps {
   hub: McpHub;
   agent: VoiceAgent;
   usage: UsageStore;
+  rules: RulesStore;
   sessions: SessionStore;
   logger: Logger;
   adminUser: string;
@@ -21,6 +24,8 @@ export interface AdminDeps {
   publicBaseUrl: string;
   webhookSecret: string;
   timeZone: string;
+  /** config/instructions.md - the editable business instructions. */
+  instructionsPath: string;
 }
 
 export const TTS_VOICES = [
@@ -28,6 +33,11 @@ export const TTS_VOICES = [
   ...["Charon", "Puck", "Fenrir", "Orus", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Algenib", "Rasalgethi", "Alnilam", "Schedar", "Achird", "Zubenelgenubi", "Sadachbia", "Sadaltager"].map((v) => ({ id: v, label: `${v} (Gemini, גבר, בתשלום)` })),
   ...["Kore", "Zephyr", "Leda", "Aoede", "Callirrhoe", "Autonoe", "Despina", "Erinome", "Laomedeia", "Achernar", "Gacrux", "Pulcherrima", "Vindemiatrix", "Sulafat"].map((v) => ({ id: v, label: `${v} (Gemini, אישה, בתשלום)` })),
 ];
+
+function require_dirname(file: string): string {
+  const idx = Math.max(file.lastIndexOf("/"), file.lastIndexOf("\\"));
+  return idx > 0 ? file.slice(0, idx) : ".";
+}
 
 function timingSafeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
@@ -122,6 +132,70 @@ export function registerAdminRoutes(app: FastifyInstance, d: AdminDeps): void {
 
   app.get("/admin/api/prompt", { preHandler: requireAuth }, async (_req, reply) => {
     return reply.type("text/plain; charset=utf-8").send(d.agent.getSystemPrompt());
+  });
+
+  /* ---- Standing rules (the bot's editable skill) ---- */
+  app.get("/admin/api/rules", { preHandler: requireAuth }, async () => ({ rules: d.rules.list() }));
+
+  app.post("/admin/api/rules", { preHandler: requireAuth }, async (request, reply) => {
+    const body = (request.body ?? {}) as { text?: string };
+    try {
+      const rule = d.rules.add(String(body.text ?? ""), "admin");
+      return { ok: true, rule, rules: d.rules.list() };
+    } catch (err) {
+      return reply.code(400).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.put("/admin/api/rules", { preHandler: requireAuth }, async (request, reply) => {
+    const body = (request.body ?? {}) as { texts?: string[] };
+    if (!Array.isArray(body.texts)) return reply.code(400).send({ ok: false, error: "texts must be an array of strings" });
+    const rules = d.rules.replaceAll(body.texts.map(String), "admin");
+    d.logger.info({ count: rules.length }, "rules replaced from admin UI");
+    return { ok: true, rules };
+  });
+
+  app.put("/admin/api/rules/:id", { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = (request.body ?? {}) as { text?: string };
+    try {
+      const rule = d.rules.update(Number(id), String(body.text ?? ""), "admin");
+      return { ok: true, rule, rules: d.rules.list() };
+    } catch (err) {
+      return reply.code(400).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete("/admin/api/rules/:id", { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      const rule = d.rules.remove(Number(id));
+      return { ok: true, rule, rules: d.rules.list() };
+    } catch (err) {
+      return reply.code(400).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /* ---- Business instructions file (config/instructions.md) ---- */
+  app.get("/admin/api/instructions", { preHandler: requireAuth }, async (_req, reply) => {
+    let text = "";
+    try {
+      if (fs.existsSync(d.instructionsPath)) text = fs.readFileSync(d.instructionsPath, "utf8");
+    } catch {
+      text = "";
+    }
+    return reply.type("text/plain; charset=utf-8").send(text);
+  });
+
+  app.put("/admin/api/instructions", { preHandler: requireAuth }, async (request, reply) => {
+    const body = (request.body ?? {}) as { text?: string };
+    if (typeof body.text !== "string") return reply.code(400).send({ ok: false, error: "text must be a string" });
+    if (body.text.length > 200_000) return reply.code(400).send({ ok: false, error: "instructions too long" });
+    fs.mkdirSync(require_dirname(d.instructionsPath), { recursive: true });
+    fs.writeFileSync(d.instructionsPath, body.text, "utf8");
+    d.agent.refresh();
+    d.logger.info({ chars: body.text.length }, "instructions.md updated from admin UI");
+    return { ok: true };
   });
 
   /** Text chat with the same agent - lets the admin test tools without a phone. */
