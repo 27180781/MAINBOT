@@ -2,7 +2,9 @@ services:
   mainbot:
     build: .
     image: mainbot-phone-agent
+    container_name: mainbot
     restart: unless-stopped
+    # One instance only: active call sessions live in memory.
     env_file: .env
     environment:
       NODE_ENV: production
@@ -10,10 +12,27 @@ services:
       HOST: 0.0.0.0
       DATA_DIR: /app/data
       MCP_AUTH_DIR: /app/.mcp-auth
+      MCP_CONFIG_PATH: /app/config/mcp-servers.json
+      INSTRUCTIONS_PATH: /app/config/instructions.md
     ports:
-      - "3000:3000"
+      # Bind to localhost only; a reverse proxy (Caddy / nginx) terminates HTTPS.
+      # Use "3000:3000" if the proxy runs elsewhere.
+      - "127.0.0.1:3000:3000"
     volumes:
+      # Settings, standing rules and the usage log (transcripts).
       - ./data:/app/data
+      # MCP OAuth tokens (mode 0600 files).
       - ./.mcp-auth:/app/.mcp-auth
-      # Edit MCP servers / business instructions without rebuilding:
-      - ./config:/app/config:ro
+      # mcp-servers.json + instructions.md. Read-write: the admin UI saves instructions.md.
+      - ./config:/app/config
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

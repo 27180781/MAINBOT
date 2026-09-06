@@ -1,14 +1,30 @@
+# Dependencies and build output are produced inside the image
 node_modules
 dist
+coverage
+
+# Runtime state and secrets never go into the image (mounted as volumes / env_file)
 data
 .mcp-auth
 .env
 .env.*
 !.env.example
+
+# Repo metadata, tests and docs
 .git
 .github
+.gitignore
 test
 docs
-coverage
+README.md
+captain-definition
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Editor / OS noise
+.vscode
+.idea
 *.log
+npm-debug.log*
 .DS_Store
