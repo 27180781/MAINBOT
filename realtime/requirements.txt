@@ -1,4 +1,6 @@
 livekit-agents[anthropic,elevenlabs,silero,soniox,mcp]~=1.8.0
+# The LiveKit Anthropic plugin (1.8.0) builds the client with httpx; anthropic 1.x switched to httpx2.
+anthropic>=0.125,<1
 livekit-plugins-noise-cancellation~=0.3.0
 livekit-api~=1.2
 aiohttp>=3.10
