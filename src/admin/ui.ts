@@ -240,7 +240,8 @@ const BODY = String.raw`
       <div class="field">
         <label for="f-fillerMode">בזמן שהעוזר חושב</label>
         <select id="f-fillerMode">
-          <option value="tts">tts – הודעת המתנה מוקראת</option>
+          <option value="tts">tts – הודעת המתנה מוקראת ("רק רגע, אני בודק")</option>
+          <option value="music">music – מוזיקת ההמתנה של המרכזייה</option>
           <option value="silence">silence – שקט</option>
         </select>
       </div>

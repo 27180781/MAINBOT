@@ -121,14 +121,17 @@ export class McpHub {
   }
 
   private async closeConnection(c: Connection): Promise<void> {
-    try {
-      await c.client?.close();
-    } catch {
-      /* ignore */
-    }
+    // Detach before closing: the transport's onclose handler only reports drops while
+    // `c.client === client`, so our own shutdown/reconnect is not logged as a lost transport.
+    const client = c.client;
     c.client = null;
     c.transport = null;
     if (c.state === "connected") c.state = "disconnected";
+    try {
+      await client?.close();
+    } catch {
+      /* ignore */
+    }
   }
 
   private providerFor(c: Connection): FileOAuthProvider | null {

@@ -8,9 +8,12 @@
 1. CapRover → Apps → **Create New App**: שם `mainbot`.
    סמנו **Has Persistent Data** (חובה, אחרת הכללים, ההגדרות, השימוש וההתחברויות ל-MCP יימחקו בכל פריסה).
 2. בלשונית **App Configs**:
-   - **Persistent Directories** (שני מיפויים):
+   - **Persistent Directories** (שלושה מיפויים):
      - Path in App: `/app/data` → Label: `mainbot-data`
      - Path in App: `/app/.mcp-auth` → Label: `mainbot-mcp-auth`
+     - Path in App: `/app/config` → Label: `mainbot-config` (‏`instructions.md` שממשק הניהול שומר, ו-`mcp-servers.json`; בפריסה הראשונה הנפח מתמלא מהקבצים שבתמונה)
+
+     שימו לב: מרגע ש-`/app/config` נשמר בנפח, שינויים ב-`config/mcp-servers.json` שנדחפים ל-GitHub כבר לא מגיעים לאפליקציה (הנפח מסתיר את העותק שבתמונה). ערכו את הקובץ ישירות בקונטיינר (למשל `docker exec -it $(docker ps -qf name=srv-captain--mainbot) vi /app/config/mcp-servers.json`) והפעילו מחדש את האפליקציה.
    - **Environment Variables** (ראו טבלה למטה).
    - **Instance Count**: `1`.
    - **Container HTTP Port**: `3000`.
@@ -47,7 +50,7 @@
 4. **Save & Update** → CapRover מציג **Webhook URL**
 5. ב-GitHub: Settings → Webhooks → Add webhook → Payload URL = ה-Webhook URL, Content type `application/json`, אירוע `Just the push event`
 
-מעכשיו כל דחיפה לענף בונה את התמונה מחדש ומפעילה אותה. הנתונים ב-`/app/data` וב-`/app/.mcp-auth` נשמרים בין פריסות.
+מעכשיו כל דחיפה לענף בונה את התמונה מחדש ומפעילה אותה. הנתונים ב-`/app/data`, ב-`/app/.mcp-auth` וב-`/app/config` נשמרים בין פריסות.
 
 ## 4. אחרי הפריסה הראשונה
 
@@ -61,5 +64,6 @@
 
 - **הבנייה נכשלת** - ודאו שה-`Dockerfile` וה-`captain-definition` קיימים בענף שנבחר, ושה-Node בתמונה הוא 22.
 - **"נדרשת התחברות" אחרי פריסה** - כנראה ש-`/app/.mcp-auth` לא הוגדר כ-Persistent Directory.
+- **ההוראות שנערכו ב-`/admin` נעלמו אחרי פריסה** - `/app/config` לא הוגדר כ-Persistent Directory.
 - **ההתחברות ל-MCP חוזרת לכתובת שגויה** - `PUBLIC_BASE_URL` חייב להיות זהה לכתובת שממנה נכנסים ל-`/admin` (כולל https).
 - **המרכזייה מקבלת 403** - ה-`WEBHOOK_SECRET` בכתובת שהוגדרה בטכנוליין שונה מזה שבמשתני הסביבה.

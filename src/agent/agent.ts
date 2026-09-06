@@ -158,6 +158,9 @@ export class VoiceAgent {
             model: s.model,
             max_tokens: s.maxTokens,
             system: [{ type: "text", text: this.systemPrompt, cache_control: { type: "ephemeral" } }],
+            // Automatic breakpoint on the last cacheable block: the growing conversation (tool
+            // results included) is read from cache on every iteration instead of re-sent in full.
+            cache_control: { type: "ephemeral" },
             messages: conv.messages,
             tools: this.toolsCache,
             thinking: { type: "adaptive" },

@@ -152,6 +152,35 @@ describe("ConfirmationGate", () => {
     expect(gate.check(write, "crm__send_whatsapp", args, 2).allowed).toBe(true);
   });
 
+  it("requires a new confirmation when the arguments change", () => {
+    const gate = new ConfirmationGate({ confirmWrites: true, blockedTools: [] });
+    gate.check(write, "crm__send_whatsapp", args, 1);
+    // Same tool, different recipient: the caller approved a message to someone else.
+    const other = { to: "0529999999", text: "שלום" };
+    const d = gate.check(write, "crm__send_whatsapp", other, 2);
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toBe("confirmation_required");
+    expect(d.message).toMatch(/arguments differ/i);
+    expect(gate.pendingCount()).toBe(1);
+    // The changed request became the pending one and is approved on the next turn as usual.
+    expect(gate.check(write, "crm__send_whatsapp", other, 3)).toEqual({ allowed: true });
+  });
+
+  it("replaces a pending request when the model changes the arguments within the same turn", () => {
+    const gate = new ConfirmationGate({ confirmWrites: true, blockedTools: [] });
+    const other = { to: "0529999999", text: "שלום" };
+    gate.check(write, "crm__send_whatsapp", args, 1);
+    gate.check(write, "crm__send_whatsapp", other, 1);
+    expect(gate.pendingCount()).toBe(1);
+    expect(gate.check(write, "crm__send_whatsapp", other, 2)).toEqual({ allowed: true });
+  });
+
+  it("treats the same arguments in a different key order as the same request", () => {
+    const gate = new ConfirmationGate({ confirmWrites: true, blockedTools: [] });
+    gate.check(write, "crm__send_whatsapp", { to: "0501234567", text: "שלום", opts: { a: 1, b: [1, 2] } }, 1);
+    expect(gate.check(write, "crm__send_whatsapp", { opts: { b: [1, 2], a: 1 }, text: "שלום", to: "0501234567" }, 2)).toEqual({ allowed: true });
+  });
+
   it("rejects blocked tools before anything else, even read tools", () => {
     const gate = new ConfirmationGate({ confirmWrites: true, blockedTools: ["__delete_", "^crm__get_secret$"] });
     const d = gate.check({ name: "delete_contact" }, "crm__delete_contact", {}, 1);

@@ -107,7 +107,7 @@ describe("TechnolineCallFlow", () => {
     const res = mods(await flow.handle(pbx("c1")));
     expect(res).toEqual([
       { type: "simpleMessage", files: [{ text: settings.get().greeting }] },
-      { type: "stt", name: "utt_1", max: settings.get().sttMaxSeconds },
+      { type: "stt", name: "utt_1", max: settings.get().sttMaxSeconds, confirm: "no" },
     ]);
     expect(newConversation).toHaveBeenCalledWith("c1", PHONE);
     expect(respond).not.toHaveBeenCalled();
@@ -161,7 +161,7 @@ describe("TechnolineCallFlow", () => {
     const ok = mods(await flow.handle(pbx("c1", { pin_1: "0000", pin_2: "1234" })));
     expect(ok).toEqual([
       { type: "simpleMessage", files: [{ text: settings.get().greeting }] },
-      { type: "stt", name: "utt_1", max: settings.get().sttMaxSeconds },
+      { type: "stt", name: "utt_1", max: settings.get().sttMaxSeconds, confirm: "no" },
     ]);
     expect(sessions.get("c1")).toMatchObject({ authorized: true, expectedParam: "utt_1" });
     expect(respond).not.toHaveBeenCalled();
@@ -196,7 +196,7 @@ describe("TechnolineCallFlow", () => {
     const res = mods(await flow.handle(pbx("c1", { utt_1: "מה השעה" })));
     expect(res).toEqual([
       { type: "simpleMessage", files: [{ text: "התשובה שלי" }] },
-      { type: "stt", name: "utt_2", max: settings.get().sttMaxSeconds },
+      { type: "stt", name: "utt_2", max: settings.get().sttMaxSeconds, confirm: "no" },
     ]);
     expect(respond).toHaveBeenCalledTimes(1);
     const [conv, text, ctx] = respond.mock.calls[0]!;
@@ -256,7 +256,7 @@ describe("TechnolineCallFlow", () => {
     const answer = mods(await flow.handle(pbx("c1", { utt_1: "תבדוק משהו ארוך" })));
     expect(answer).toEqual([
       { type: "simpleMessage", files: [{ text: "הנה התוצאה" }] },
-      { type: "stt", name: "utt_2", max: settings.get().sttMaxSeconds },
+      { type: "stt", name: "utt_2", max: settings.get().sttMaxSeconds, confirm: "no" },
     ]);
     expect(sessions.get("c1")?.pending).toBeNull();
     expect(respond).toHaveBeenCalledTimes(1);
@@ -327,7 +327,7 @@ describe("TechnolineCallFlow", () => {
     expect(settings.get().maxSilentTurns).toBe(2);
 
     const first = mods(await flow.handle(pbx("c1", { utt_1: "" })));
-    expect(first).toEqual([{ type: "simpleMessage", files: [{ text: "לא שמעתי. אפשר לחזור?" }] }, { type: "stt", name: "utt_2", max: settings.get().sttMaxSeconds }]);
+    expect(first).toEqual([{ type: "simpleMessage", files: [{ text: "לא שמעתי. אפשר לחזור?" }] }, { type: "stt", name: "utt_2", max: settings.get().sttMaxSeconds, confirm: "no" }]);
     expect(respond).not.toHaveBeenCalled();
 
     const second = mods(await flow.handle(pbx("c1", { utt_1: "", utt_2: "   " })));
@@ -400,11 +400,23 @@ describe("TechnolineCallFlow", () => {
     expect(newConversation).toHaveBeenCalledWith("c-restart", PHONE);
     expect(res).toEqual([
       { type: "simpleMessage", files: [{ text: "ממשיכים" }] },
-      { type: "stt", name: "utt_4", max: settings.get().sttMaxSeconds },
+      { type: "stt", name: "utt_4", max: settings.get().sttMaxSeconds, confirm: "no" },
     ]);
     expect(JSON.stringify(res)).not.toContain(settings.get().greeting);
     expect(sessions.get("c-restart")).toMatchObject({ turns: 3, expectedParam: "utt_4", utteranceIndex: 4 });
     expect(logs.log.warn).toHaveBeenCalledWith(expect.objectContaining({ callId: "c-restart", param: "utt_3" }), expect.stringMatching(/recovered/));
+  });
+
+  it("does not count empty earlier utterances as turns when recovering after a restart", async () => {
+    const { agent, respond } = fakeAgent();
+    respond.mockResolvedValue(reply("ממשיכים"));
+    const flow = makeFlow(agent);
+    const res = mods(await flow.handle(pbx("c-restart", { utt_1: "ראשון", utt_2: "", utt_3: "   ", utt_4: "רביעי" })));
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond.mock.calls[0]![1]).toBe("רביעי");
+    expect(res[1]).toMatchObject({ type: "stt", name: "utt_5" });
+    // utt_1 and utt_4 were spoken; utt_2 / utt_3 were silence re-prompts.
+    expect(sessions.get("c-restart")).toMatchObject({ turns: 2, expectedParam: "utt_5", utteranceIndex: 5 });
   });
 
   it("enforces the maximum number of turns", async () => {

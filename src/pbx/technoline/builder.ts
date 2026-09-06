@@ -29,11 +29,13 @@ export interface ListenOptions extends SpeechOptions {
   minSeconds?: number;
   prompt?: string;
   fileName?: string;
+  /** Defaults to "no": never ask the caller to confirm or re-record an utterance. */
+  confirm?: "confirmOnly" | "ful" | "no";
 }
 
 /** Speech-to-text turn: records the caller (<= 10 s) and returns the transcript under `name`. */
 export function listen(name: string, opts: ListenOptions = {}): SttModule {
-  const mod: SttModule = { type: "stt", name, max: Math.min(10, Math.max(1, opts.maxSeconds ?? 10)) };
+  const mod: SttModule = { type: "stt", name, max: Math.min(10, Math.max(1, opts.maxSeconds ?? 10)), confirm: opts.confirm ?? "no" };
   if (opts.minSeconds) mod.min = opts.minSeconds;
   if (opts.fileName) mod.fileName = opts.fileName;
   if (opts.prompt) mod.files = textToAudioItems(opts.prompt, opts);
@@ -75,6 +77,8 @@ export interface MenuOptions extends SpeechOptions {
   timeout?: number;
   errorReturn?: string;
   extensionChange?: string;
+  /** "yes" = the PBX plays hold music while it waits for our next response. */
+  setMusic?: "yes" | "no";
 }
 
 export function menu(name: string, opts: MenuOptions): SimpleMenuModule {
@@ -83,6 +87,7 @@ export function menu(name: string, opts: MenuOptions): SimpleMenuModule {
   if (opts.timeout !== undefined) mod.timeout = opts.timeout;
   if (opts.errorReturn !== undefined) mod.errorReturn = opts.errorReturn;
   if (opts.extensionChange !== undefined) mod.extensionChange = opts.extensionChange;
+  if (opts.setMusic !== undefined) mod.setMusic = opts.setMusic;
   if (opts.prompt) mod.files = textToAudioItems(opts.prompt, opts);
   return mod;
 }

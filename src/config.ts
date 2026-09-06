@@ -4,7 +4,8 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import dotenv from "dotenv";
 
-dotenv.config();
+// quiet: dotenv v17 otherwise prints an "injected env" banner on stdout at import time (breaks --json CLIs).
+dotenv.config({ quiet: true });
 
 /* ------------------------------------------------------------------ */
 /* Environment (static, read once at boot)                             */
@@ -68,7 +69,11 @@ export const SettingsSchema = z.object({
   ttsVoice: z.string().default(process.env.TTS_VOICE ?? ""),
   greeting: z.string().default(process.env.GREETING ?? "שלום, כאן העוזר החכם. אחרי הצפצוף אמרו במה אוכל לעזור."),
   goodbye: z.string().default("להתראות."),
-  fillerMode: z.enum(["tts", "silence"]).default("tts"),
+  /**
+   * What the caller hears while Claude works: a spoken "one moment" (tts), a silent
+   * clip (silence) or the PBX hold music via a 1-second simpleMenu with setMusic (music).
+   */
+  fillerMode: z.enum(["tts", "silence", "music"]).default("tts"),
   allowedPhones: z.array(z.string()).default(
     (process.env.ALLOWED_CALLER_PHONES ?? "")
       .split(",")

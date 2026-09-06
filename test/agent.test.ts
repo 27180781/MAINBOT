@@ -202,6 +202,7 @@ describe("VoiceAgent", () => {
     expect(req.model).toBe(settings.get().model);
     expect(req.max_tokens).toBe(settings.get().maxTokens);
     expect(req.system).toEqual([{ type: "text", text: agent.getSystemPrompt(), cache_control: { type: "ephemeral" } }]);
+    expect(req.cache_control).toEqual({ type: "ephemeral" });
     expect(req.thinking).toEqual({ type: "adaptive" });
     expect(req).not.toHaveProperty("thinking.budget_tokens");
     expect(req.output_config).toEqual({ effort: settings.get().effort });

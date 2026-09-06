@@ -84,6 +84,11 @@ export interface SttModule {
   fileName?: string;
   saveFolder?: string;
   campaignBilling?: string;
+  /**
+   * Inherited from `record` ("stt does everything record does"): "no" skips the
+   * confirm / re-record menu after the recording so the conversation flows.
+   */
+  confirm?: "confirmOnly" | "ful" | "no";
   files?: AudioItem[];
 }
 

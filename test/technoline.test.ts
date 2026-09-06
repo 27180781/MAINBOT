@@ -135,15 +135,15 @@ describe("builder helpers", () => {
   });
 
   it("listen() clamps max to the PBX limit of 10 seconds and at least 1", () => {
-    expect(listen("utt_1", { maxSeconds: 30 })).toEqual({ type: "stt", name: "utt_1", max: 10 });
-    expect(listen("utt_1", { maxSeconds: 0 })).toEqual({ type: "stt", name: "utt_1", max: 1 });
-    expect(listen("utt_1", { maxSeconds: 7 })).toEqual({ type: "stt", name: "utt_1", max: 7 });
-    expect(listen("utt_1")).toEqual({ type: "stt", name: "utt_1", max: 10 });
+    expect(listen("utt_1", { maxSeconds: 30 })).toEqual({ type: "stt", name: "utt_1", max: 10, confirm: "no" });
+    expect(listen("utt_1", { maxSeconds: 0 })).toEqual({ type: "stt", name: "utt_1", max: 1, confirm: "no" });
+    expect(listen("utt_1", { maxSeconds: 7 })).toEqual({ type: "stt", name: "utt_1", max: 7, confirm: "no" });
+    expect(listen("utt_1")).toEqual({ type: "stt", name: "utt_1", max: 10, confirm: "no" });
   });
 
   it("listen() adds optional prompt, min and fileName", () => {
     const mod = listen("utt_2", { prompt: "דברו", minSeconds: 1, fileName: "rec_{{PBXcallId}}", voice: "Puck" });
-    expect(mod).toEqual({ type: "stt", name: "utt_2", max: 10, min: 1, fileName: "rec_{{PBXcallId}}", files: [{ text: "דברו", voice: "Puck" }] });
+    expect(mod).toEqual({ type: "stt", name: "utt_2", max: 10, confirm: "no", min: 1, fileName: "rec_{{PBXcallId}}", files: [{ text: "דברו", voice: "Puck" }] });
   });
 
   it("getDigits() builds a getDTMF module with confirmType 'no' by default", () => {
@@ -181,7 +181,7 @@ describe("builder helpers", () => {
 
   it("chain() drops null/undefined entries and empty simpleMessages but keeps everything else", () => {
     const out = chain(say(""), null, undefined, hangup(), say("היי"), listen("utt_1"));
-    expect(out).toEqual([{ type: "hangup" }, { type: "simpleMessage", files: [{ text: "היי" }] }, { type: "stt", name: "utt_1", max: 10 }]);
+    expect(out).toEqual([{ type: "hangup" }, { type: "simpleMessage", files: [{ text: "היי" }] }, { type: "stt", name: "utt_1", max: 10, confirm: "no" }]);
     expect(chain()).toEqual([]);
     expect(chain(say(""))).toEqual([]);
   });

@@ -207,7 +207,7 @@ describe("buildServer", () => {
     const body = res.json();
     expect(body).toEqual([
       { type: "simpleMessage", files: [{ text: server.settings.get().greeting }] },
-      { type: "stt", name: "utt_1", max: server.settings.get().sttMaxSeconds },
+      { type: "stt", name: "utt_1", max: server.settings.get().sttMaxSeconds, confirm: "no" },
     ]);
     expect(server.sessions.get("call-1")).toMatchObject({ authorized: true, expectedParam: "utt_1", phone: PHONE });
     expect((await server.app.inject({ method: "GET", url: "/health" })).json().activeCalls).toBe(1);

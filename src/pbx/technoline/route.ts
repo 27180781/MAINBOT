@@ -7,7 +7,7 @@ import type { VoiceAgent, AgentReply } from "../../agent/agent.js";
 import type { CallSession, SessionStore } from "../../calls/session.js";
 import { parsePbxRequest, latestNumberedParam } from "./request.js";
 import type { PbxRequest, PbxResponse } from "./types.js";
-import { chain, getDigits, hangup, listen, say, sayItems } from "./builder.js";
+import { chain, getDigits, hangup, listen, menu, say, sayItems } from "./builder.js";
 
 export interface TechnolineDeps {
   agent: VoiceAgent;
@@ -25,6 +25,13 @@ const UTT = "utt";
 
 function sleep(ms: number): Promise<null> {
   return new Promise((resolve) => setTimeout(() => resolve(null), ms));
+}
+
+/** Counts the `utt_N` parameters below `before` that carry text (empty ones were silence re-prompts). */
+function countSpokenUtterances(params: Record<string, string>, before: number): number {
+  let n = 0;
+  for (let i = 1; i < before; i++) if ((params[`${UTT}_${i}`] ?? "").trim()) n++;
+  return n;
 }
 
 /**
@@ -57,8 +64,9 @@ export class TechnolineCallFlow {
       if (latest) {
         session.utteranceIndex = latest.index;
         session.expectedParam = latest.name;
-        session.turns = latest.index - 1;
-        logger.warn({ callId: req.callId, param: latest.name }, "recovered call without session state");
+        // Every earlier utt_N is still in the query string; only the ones with text were real turns.
+        session.turns = countSpokenUtterances(req.params, latest.index);
+        logger.warn({ callId: req.callId, param: latest.name, turns: session.turns }, "recovered call without session state");
       }
     }
     if (session.ended) return hangup();
@@ -124,6 +132,9 @@ export class TechnolineCallFlow {
           return chain(say(`הגענו למגבלת השיחה. ${s.goodbye}`, { voice }), hangup());
         }
         this.startJob(session, text);
+        // Music mode: answer at once with a 1-second menu that switches hold music on,
+        // so the caller hears music (not silence) during every following long poll.
+        if (s.fillerMode === "music") return this.waitMenu(session);
         return this.waitOrFiller(session);
       }
       // The PBX came back without the value we asked for (timeout / no speech): ask again.
@@ -175,6 +186,19 @@ export class TechnolineCallFlow {
     this.d.logger.info({ callId: session.callId, turn: session.turns, text }, "utterance");
   }
 
+  /**
+   * A menu nobody is meant to press: it times out after one second and returns
+   * `wait_N_M=WAIT`, and its setMusic flag makes the PBX play hold music while it waits
+   * for our (long-polling) reply to that request. Unique names keep the accumulated
+   * query parameters from colliding.
+   */
+  private waitMenu(session: CallSession): PbxResponse {
+    const job = session.pending;
+    const name = `wait_${session.utteranceIndex}_${job ? job.fillers + 1 : 0}`;
+    if (job) job.fillers += 1;
+    return menu(name, { enabledKeys: "#", timeout: 1, times: 1, errorReturn: "WAIT", setMusic: "yes" });
+  }
+
   private async waitOrFiller(session: CallSession): Promise<PbxResponse> {
     const job = session.pending!;
     const s = this.d.settings.get();
@@ -183,6 +207,7 @@ export class TechnolineCallFlow {
     if (!result) {
       job.fillers += 1;
       this.d.logger.info({ callId: session.callId, fillers: job.fillers, waitedMs: Date.now() - job.startedAt }, "agent still working - sending filler");
+      if (s.fillerMode === "music") return this.waitMenu(session);
       if (s.fillerMode === "silence" && this.d.publicBaseUrl) {
         return sayItems([{ fileLink: `${this.d.publicBaseUrl}/audio/silence.wav`, fileName: "mainbot_silence_3s" }]);
       }

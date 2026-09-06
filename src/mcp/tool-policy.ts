@@ -56,8 +56,19 @@ export interface GateDecision {
   message?: string;
 }
 
+/** JSON with sorted object keys, so the same arguments always compare equal regardless of key order. */
+export function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 interface Pending {
   turn: number;
+  /** Canonical JSON of the arguments the caller was asked to approve. */
   args: string;
 }
 
@@ -70,8 +81,8 @@ export interface GateOptions {
 
 /**
  * Per-call gate. `turn` is the caller-turn counter (increments once per spoken utterance),
- * so a write requested in turn N is only executed when the model requests it again in
- * turn N+1 (or N+2) - i.e. after the caller heard the question and answered.
+ * so a write requested in turn N is only executed when the model requests it again, with
+ * the same arguments, in turn N+1 (or N+2) - i.e. after the caller heard the question and answered.
  */
 export class ConfirmationGate {
   private pending = new Map<string, Pending>();
@@ -89,19 +100,24 @@ export class ConfirmationGate {
     }
     if (!this.opts.confirmWrites || hasServerSideConfirmation(tool)) return { allowed: true };
     const window = this.opts.approvalWindowTurns ?? 2;
+    const key = stableStringify(args ?? {});
     const prev = this.pending.get(fullName);
-    if (prev && prev.turn < turn && turn - prev.turn <= window) {
+    const inWindow = prev !== undefined && prev.turn < turn && turn - prev.turn <= window;
+    if (prev && inWindow && prev.args === key) {
       this.pending.delete(fullName);
       return { allowed: true };
     }
-    if (!prev || prev.turn !== turn) this.pending.set(fullName, { turn, args: JSON.stringify(args ?? {}) });
+    // Same tool, different arguments (another recipient, another amount): the caller never approved this one.
+    const argsChanged = prev !== undefined && prev.args !== key && turn - prev.turn <= window;
+    if (!prev || prev.turn !== turn || argsChanged) this.pending.set(fullName, { turn, args: key });
     return {
       allowed: false,
       reason: "confirmation_required",
       message:
         "CONFIRMATION REQUIRED: this action changes data or contacts someone, so it was NOT executed. " +
+        (argsChanged ? "The arguments differ from the request the caller was asked to confirm, so a new confirmation is needed. " : "") +
         "Describe to the caller exactly what you are about to do (who, what, which values) and ask for a clear yes. " +
-        "Only after the caller confirms in their next reply, call this tool again with the same arguments and it will run.",
+        "Only after the caller confirms in their next reply, call this tool again with exactly the same arguments and it will run.",
     };
   }
 
