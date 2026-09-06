@@ -101,6 +101,33 @@ describe("splitForSpeech", () => {
     expect(splitForSpeech("**0501234567**")).toEqual([{ kind: "digits", value: "0501234567" }]);
   });
 
+  it("reads long digit runs such as IDs and confirmation numbers digit by digit", () => {
+    expect(splitForSpeech("מספר האישור הוא 87654321.")).toEqual([
+      { kind: "text", value: "מספר האישור הוא" },
+      { kind: "digits", value: "87654321" },
+    ]);
+    expect(splitForSpeech("תעודת זהות 123456789 של דוד")).toEqual([
+      { kind: "text", value: "תעודת זהות" },
+      { kind: "digits", value: "123456789" },
+      { kind: "text", value: "של דוד" },
+    ]);
+  });
+
+  it("leaves amounts of money, decimals, grouped numbers and short codes as text", () => {
+    for (const s of ["המחיר 1234567 שקלים", 'סכום 1234567 ש"ח', "ערך 1234567.89 בערך", "סכום 12,345,678", "קוד 123456", "מזהה 1234567890123"]) {
+      expect(splitForSpeech(s), s).toEqual([{ kind: "text", value: s }]);
+    }
+    expect(splitForSpeech("1234567% מוזר")).toEqual([{ kind: "text", value: "1234567 אחוז מוזר" }]);
+  });
+
+  it("drops the punctuation left behind right after a digit run", () => {
+    expect(splitForSpeech("המספר 0501234567. תודה רבה")).toEqual([
+      { kind: "text", value: "המספר" },
+      { kind: "digits", value: "0501234567" },
+      { kind: "text", value: "תודה רבה" },
+    ]);
+  });
+
   it("returns an empty list for empty or whitespace-only input", () => {
     expect(splitForSpeech("")).toEqual([]);
     expect(splitForSpeech("   \n ")).toEqual([]);

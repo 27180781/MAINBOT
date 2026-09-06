@@ -15,6 +15,7 @@ let server: Built;
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "mainbot-server-"));
   fs.writeFileSync(path.join(dir, "mcp-servers.json"), JSON.stringify({ servers: [] }), "utf8");
+  fs.writeFileSync(path.join(dir, "instructions.md"), "הנחיות לבדיקה: המקדמה 200 שקלים.", "utf8");
   // src/config.ts reads the environment at import time, so everything must be stubbed before the dynamic import.
   vi.stubEnv("WEBHOOK_SECRET", SECRET);
   vi.stubEnv("ADMIN_USER", "admin");
@@ -22,6 +23,7 @@ beforeAll(async () => {
   vi.stubEnv("DATA_DIR", dir);
   vi.stubEnv("MCP_CONFIG_PATH", path.join(dir, "mcp-servers.json"));
   vi.stubEnv("MCP_AUTH_DIR", path.join(dir, "auth"));
+  vi.stubEnv("INSTRUCTIONS_PATH", path.join(dir, "instructions.md"));
   vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test-not-real");
   vi.stubEnv("ALLOWED_CALLER_PHONES", `${PHONE}, 0529999999`);
   vi.stubEnv("PUBLIC_BASE_URL", "https://bot.example.com/");
@@ -100,6 +102,73 @@ describe("buildServer", () => {
     expect(prompt.statusCode).toBe(200);
     expect(prompt.headers["content-type"]).toMatch(/text\/plain/);
     expect(prompt.body).toContain("העוזר החכם");
+  });
+
+  it("reads and writes the business instructions file through the admin API", async () => {
+    const before = await server.app.inject({ method: "GET", url: "/admin/api/instructions", headers: { authorization: AUTH } });
+    expect(before.statusCode).toBe(200);
+    expect(before.headers["content-type"]).toMatch(/text\/plain/);
+    expect(before.body).toBe("הנחיות לבדיקה: המקדמה 200 שקלים.");
+    expect(server.agent.getSystemPrompt()).toContain("המקדמה 200 שקלים");
+
+    const put = await server.app.inject({ method: "PUT", url: "/admin/api/instructions", headers: { authorization: AUTH }, payload: { text: "הנחיות חדשות לגמרי." } });
+    expect(put.statusCode).toBe(200);
+    expect(put.json()).toEqual({ ok: true });
+    expect(fs.readFileSync(path.join(dir, "instructions.md"), "utf8")).toBe("הנחיות חדשות לגמרי.");
+    expect(server.agent.getSystemPrompt()).toContain("הנחיות חדשות לגמרי."); // the prompt is rebuilt immediately
+    expect(server.agent.getSystemPrompt()).not.toContain("המקדמה 200 שקלים");
+    expect((await server.app.inject({ method: "GET", url: "/admin/api/instructions", headers: { authorization: AUTH } })).body).toBe("הנחיות חדשות לגמרי.");
+
+    const bad = await server.app.inject({ method: "PUT", url: "/admin/api/instructions", headers: { authorization: AUTH }, payload: { text: 5 } });
+    expect(bad.statusCode).toBe(400);
+    expect(fs.readFileSync(path.join(dir, "instructions.md"), "utf8")).toBe("הנחיות חדשות לגמרי.");
+    // The repository's own instructions file is never touched by the test server.
+    expect(fs.readFileSync(path.join(process.cwd(), "config", "instructions.md"), "utf8")).not.toContain("הנחיות חדשות לגמרי.");
+  });
+
+  it("manages standing rules through the admin API", async () => {
+    const empty = await server.app.inject({ method: "GET", url: "/admin/api/rules", headers: { authorization: AUTH } });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json()).toEqual({ rules: [] });
+
+    const added = await server.app.inject({ method: "POST", url: "/admin/api/rules", headers: { authorization: AUTH }, payload: { text: "  תמיד   לציין טלפון  " } });
+    expect(added.statusCode).toBe(200);
+    expect(added.json().rule).toMatchObject({ id: 1, text: "תמיד לציין טלפון", source: "admin" });
+    expect(added.json().rules).toHaveLength(1);
+    expect(server.agent.getSystemPrompt()).toContain("1. תמיד לציין טלפון");
+
+    const blank = await server.app.inject({ method: "POST", url: "/admin/api/rules", headers: { authorization: AUTH }, payload: { text: "   " } });
+    expect(blank.statusCode).toBe(400);
+    expect(blank.json().ok).toBe(false);
+
+    const updated = await server.app.inject({ method: "PUT", url: "/admin/api/rules/1", headers: { authorization: AUTH }, payload: { text: "תמיד לציין טלפון ומייל" } });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().rule).toMatchObject({ id: 1, text: "תמיד לציין טלפון ומייל" });
+
+    const missing = await server.app.inject({ method: "PUT", url: "/admin/api/rules/99", headers: { authorization: AUTH }, payload: { text: "x" } });
+    expect(missing.statusCode).toBe(400);
+
+    const replaced = await server.app.inject({ method: "PUT", url: "/admin/api/rules", headers: { authorization: AUTH }, payload: { texts: ["תמיד לציין טלפון ומייל", "אף פעם לא לשלוח בשבת", "", "אף פעם לא לשלוח בשבת"] } });
+    expect(replaced.statusCode).toBe(200);
+    expect(replaced.json().rules.map((r: { id: number; text: string }) => [r.id, r.text])).toEqual([
+      [1, "תמיד לציין טלפון ומייל"],
+      [2, "אף פעם לא לשלוח בשבת"],
+    ]);
+
+    const badReplace = await server.app.inject({ method: "PUT", url: "/admin/api/rules", headers: { authorization: AUTH }, payload: { texts: "no" } });
+    expect(badReplace.statusCode).toBe(400);
+
+    const removed = await server.app.inject({ method: "DELETE", url: "/admin/api/rules/1", headers: { authorization: AUTH } });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toMatchObject({ ok: true, rule: { id: 1 }, rules: [{ id: 2 }] });
+    expect((await server.app.inject({ method: "DELETE", url: "/admin/api/rules/1", headers: { authorization: AUTH } })).statusCode).toBe(400);
+
+    expect(server.rules.list().map((r) => r.id)).toEqual([2]);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "rules.json"), "utf8")).rules).toHaveLength(1);
+    expect(server.agent.getSystemPrompt()).toContain("2. אף פעם לא לשלוח בשבת");
+    expect(server.agent.getSystemPrompt()).not.toContain("1. תמיד לציין טלפון");
+
+    expect((await server.app.inject({ method: "GET", url: "/admin/api/rules" })).statusCode).toBe(401);
   });
 
   it("rejects PBX requests with the wrong secret", async () => {
