@@ -52,20 +52,38 @@ export function splitForSpeech(raw: string): SpeechSegment[] {
   if (!text) return [];
   const out: SpeechSegment[] = [];
   const pushText = (s: string) => {
-    for (const chunk of chunkSentences(s)) out.push({ kind: "text", value: chunk });
+    // A segment that follows a digit run often starts with the sentence's punctuation.
+    const trimmed = s.replace(/^[\s.,;:!?]+/, "");
+    for (const chunk of chunkSentences(trimmed)) out.push({ kind: "text", value: chunk });
   };
-  let last = 0;
+  // Phone numbers first, then any other long digit run (IDs, order/confirmation numbers)
+  // that a TTS engine would otherwise read as "one hundred twenty-three million ...".
+  const spans: Array<{ start: number; end: number; digits: string }> = [];
   for (const m of text.matchAll(PHONE_RE)) {
     const idx = m.index ?? 0;
     const digits = m[0].replace(/\D/g, "").replace(/^972/, "0");
     if (digits.length < 9 || digits.length > 10) continue; // not a phone number after all
-    pushText(text.slice(last, idx));
-    out.push({ kind: "digits", value: digits });
-    last = idx + m[0].length;
+    spans.push({ start: idx, end: idx + m[0].length, digits });
+  }
+  for (const m of text.matchAll(LONG_DIGITS_RE)) {
+    const idx = m.index ?? 0;
+    const end = idx + m[0].length;
+    if (spans.some((s) => idx < s.end && end > s.start)) continue;
+    spans.push({ start: idx, end, digits: m[0] });
+  }
+  spans.sort((a, b) => a.start - b.start);
+  let last = 0;
+  for (const s of spans) {
+    pushText(text.slice(last, s.start));
+    out.push({ kind: "digits", value: s.digits });
+    last = s.end;
   }
   pushText(text.slice(last));
   return out.filter((s) => s.value.trim().length > 0);
 }
+
+/** 7-12 consecutive digits that are not part of a decimal number or a date. */
+const LONG_DIGITS_RE = /(?<![\d.,])\d{7,12}(?![\d.,]\d)/g;
 
 /** Sentence-aware chunking so each TTS item stays short. */
 export function chunkSentences(text: string, max = MAX_SEGMENT_CHARS): string[] {
