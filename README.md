@@ -251,6 +251,10 @@ curl -s "https://<host>/pbx/technoline/<WEBHOOK_SECRET>?PBXphone=0501234567&PBXc
 
 בנוסף: `/health` מחזיר JSON עם מצב כל שרת MCP, מספר השיחות הפעילות והמודל – ללא סיסמה, נוח לניטור.
 
+## אותו עוזר בתוך ה-CRM (Chat API)
+
+המנוע זמין גם כצ'אט טקסט למערכות אחרות, למשל במקום העוזר המובנה ב-CRM: `POST /api/v1/chat` עם `Authorization: Bearer <CHAT_API_KEY>` וגוף `{ "message": "...", "sessionId": "...", "userName": "..." }` מחזיר `{ "text": "...", "toolCalls": [...] }`. אותם כלים, אותם כללים קבועים ואותו אישור לפני פעולות; הפרומפט מותאם לצ'אט (עיצוב קל מותר). מדריך מלא עם דוגמת Edge Function ל-Supabase: [docs/CRM-INTEGRATION.md](docs/CRM-INTEGRATION.md).
+
 ## מודל האבטחה
 
 - **סוד ב-URL של המרכזייה** – בלי `WEBHOOK_SECRET` נכון בנתיב, הבקשה נדחית ב-403 לפני כל עיבוד.

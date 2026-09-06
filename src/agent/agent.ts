@@ -90,8 +90,11 @@ const REFUSAL_TEXT = "מצטער, אני לא יכול לעזור עם הבקש�
  * the agent runs the tool loop (MCP tools + local tools) until Claude produces a
  * spoken answer, and records token usage for the admin dashboard.
  */
+export type Channel = "voice" | "chat";
+
 export class VoiceAgent {
   private systemPrompt = "";
+  private chatPrompt = "";
   private toolsCache: BetaToolUnion[] = [];
   private toolsCacheKey = "";
   private readonly log: Logger;
@@ -107,23 +110,25 @@ export class VoiceAgent {
   /** Rebuilds the system prompt and tool list (called when servers or settings change). */
   refresh(): void {
     const s = this.o.settings.get();
-    this.systemPrompt = buildSystemPrompt({
+    const inputs = {
       servers: this.o.hub.status(),
       tools: this.o.hub.tools(),
       toolSearchEnabled: s.toolSearch,
       instructionsPath: this.o.instructionsPath,
       extraInstructions: s.extraInstructions,
       rulesText: this.o.rules.renderForPrompt(),
-    });
+    };
+    this.systemPrompt = buildSystemPrompt({ ...inputs, channel: "voice" });
+    this.chatPrompt = buildSystemPrompt({ ...inputs, channel: "chat" });
     this.toolsCache = this.buildTools(s, this.o.hub.tools());
     this.toolsCacheKey = `${s.toolSearch}:${s.toolSearchVariant}:${this.o.hub.tools().length}`;
   }
 
-  getSystemPrompt(): string {
-    return this.systemPrompt;
+  getSystemPrompt(channel: Channel = "voice"): string {
+    return channel === "chat" ? this.chatPrompt : this.systemPrompt;
   }
 
-  newConversation(callId: string, phone: string): ConversationState {
+  newConversation(callId: string, phone: string, opts: { channel?: Channel } = {}): ConversationState {
     const s = this.o.settings.get();
     return {
       callId,
@@ -132,7 +137,7 @@ export class VoiceAgent {
       turn: 0,
       gate: new ConfirmationGate({ confirmWrites: s.confirmWrites, blockedTools: s.blockedTools }),
       contextSent: false,
-      systemPrompt: this.systemPrompt,
+      systemPrompt: this.getSystemPrompt(opts.channel ?? "voice"),
       tools: this.toolsCache,
     };
   }

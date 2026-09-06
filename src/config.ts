@@ -65,6 +65,13 @@ export const env = {
   sessionTtlMs: envInt("SESSION_TTL_MS", 30 * 60_000),
   oauthCallbackPort: envInt("MCP_OAUTH_CALLBACK_PORT", 8765),
   trustProxy: envBool("TRUST_PROXY", true),
+  /** Bearer key for the text-chat API used by the CRM (empty = API disabled). */
+  chatApiKey: process.env.CHAT_API_KEY ?? "",
+  chatCorsOrigins: (process.env.CHAT_CORS_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+  chatSessionTtlMs: envInt("CHAT_SESSION_TTL_MS", 2 * 60 * 60_000),
 };
 
 /* ------------------------------------------------------------------ */

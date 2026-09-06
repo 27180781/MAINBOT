@@ -21,6 +21,9 @@ const WRITE_PATTERNS: RegExp[] = [
   /^(create|add|update|delete|remove|send|set|manage|mark|merge|convert|record|run|execute|upload|transfer|hangup|toggle|bulk|cancel|schedule|replace|reset|rename|reorder|invite|disconnect|begin|start|edit|enable|disable|deploy|move|remix|initiate|import|learn|link|log|generate|request|write|clear|restore|rollback|fork|push|resolve|unresolve|archive|enqueue|charge|pay|refund)_?/i,
 ];
 
+const WRITE_VERBS = new Set(["create", "add", "update", "delete", "remove", "send", "set", "manage", "mark", "merge", "convert", "record", "run", "execute", "upload", "transfer", "hangup", "toggle", "bulk", "cancel", "schedule", "replace", "reset", "rename", "reorder", "invite", "disconnect", "begin", "start", "edit", "enable", "disable", "deploy", "move", "remix", "initiate", "import", "learn", "link", "log", "generate", "request", "write", "clear", "restore", "rollback", "fork", "push", "resolve", "unresolve", "archive", "charge", "pay", "refund", "capture", "tokenize", "subscribe", "unsubscribe", "use", "login"]);
+const READ_VERBS = new Set(["get", "list", "search", "find", "read", "fetch", "check", "view", "show", "describe", "diagnose", "explain", "diff", "export", "download", "count", "whoami", "lookup", "query", "verify", "validate", "test", "catalog", "report", "summary", "stats", "status", "history", "counts", "preview", "render", "plan"]);
+
 export function classifyTool(tool: ToolLike): "read" | "write" {
   const ann = tool.annotations;
   if (ann?.readOnlyHint === true) return "read";
@@ -28,6 +31,10 @@ export function classifyTool(tool: ToolLike): "read" | "write" {
   const base = tool.name.includes("__") ? tool.name.slice(tool.name.indexOf("__") + 2) : tool.name;
   if (WRITE_PATTERNS.some((re) => re.test(base))) return "write";
   if (READ_PATTERNS.some((re) => re.test(base))) return "read";
+  // Vendor-prefixed names such as sumit_documents_list / sumit_payments_charge: judge by the verbs inside.
+  const tokens = base.toLowerCase().split(/[_\-.]+/).filter(Boolean);
+  if (tokens.some((t) => WRITE_VERBS.has(t))) return "write";
+  if (tokens.some((t) => READ_VERBS.has(t))) return "read";
   // Unknown verbs: be conservative.
   return "write";
 }

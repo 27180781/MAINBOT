@@ -209,7 +209,7 @@ export function registerAdminRoutes(app: FastifyInstance, d: AdminDeps): void {
     if (body.reset) chats.delete(sessionId);
     let conv = chats.get(sessionId);
     if (!conv) {
-      conv = d.agent.newConversation(sessionId, "admin-chat");
+      conv = d.agent.newConversation(sessionId, "admin-chat", { channel: "chat" });
       chats.set(sessionId, conv);
       if (chats.size > 50) chats.delete(chats.keys().next().value as string);
     }

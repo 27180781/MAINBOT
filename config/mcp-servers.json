@@ -50,6 +50,22 @@
       ]
     },
     {
+      "name": "sumit",
+      "label": "סאמיט (הנהלת חשבונות)",
+      "description": "חשבוניות וקבלות, לקוחות, תשלומים וסליקה, הוראות קבע, דוח חובות",
+      "url": "https://sumit-mcp.caprover.clicker.co.il/mcp",
+      "auth": {
+        "type": "oauth"
+      },
+      "enabled": true,
+      "alwaysLoad": [
+        "sumit_list_accounts",
+        "sumit_documents_list",
+        "sumit_documents_get_debt_report",
+        "sumit_payments_list"
+      ]
+    },
+    {
       "name": "lovable",
       "label": "Lovable",
       "description": "פרויקטי פיתוח, הודעות לסוכן, פריסה, אנליטיקס",

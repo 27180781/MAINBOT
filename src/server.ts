@@ -11,6 +11,7 @@ import { UsageStore } from "./usage/usage-store.js";
 import { SessionStore } from "./calls/session.js";
 import { registerTechnolineRoutes } from "./pbx/technoline/route.js";
 import { registerAdminRoutes } from "./admin/routes.js";
+import { registerChatApi } from "./api/chat.js";
 
 /** 3 seconds of 8 kHz 16-bit mono silence, served as a filler when FILLER_MODE=silence. */
 export function silenceWav(seconds = 3, sampleRate = 8000): Buffer {
@@ -130,6 +131,14 @@ export async function buildServer() {
     instructionsPath: env.instructionsPath,
   });
 
+  const chatSessions = registerChatApi(app, {
+    agent,
+    logger,
+    apiKey: env.chatApiKey,
+    corsOrigins: env.chatCorsOrigins,
+    sessionTtlMs: env.chatSessionTtlMs,
+  });
+
   const sweeper = setInterval(() => {
     const n = sessions.sweep();
     if (n) logger.info({ removed: n }, "swept idle call sessions");
@@ -141,7 +150,7 @@ export async function buildServer() {
     await hub.stop();
   });
 
-  return { app, hub, agent, settings, usage, rules, sessions, flow };
+  return { app, hub, agent, settings, usage, rules, sessions, chatSessions, flow };
 }
 
 async function main(): Promise<void> {
