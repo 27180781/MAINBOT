@@ -1,0 +1,14 @@
+node_modules
+dist
+data
+.mcp-auth
+.env
+.env.*
+!.env.example
+.git
+.github
+test
+docs
+coverage
+*.log
+.DS_Store

@@ -1,0 +1,19 @@
+services:
+  mainbot:
+    build: .
+    image: mainbot-phone-agent
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOST: 0.0.0.0
+      DATA_DIR: /app/data
+      MCP_AUTH_DIR: /app/.mcp-auth
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+      - ./.mcp-auth:/app/.mcp-auth
+      # Edit MCP servers / business instructions without rebuilding:
+      - ./config:/app/config:ro

@@ -177,7 +177,9 @@ describe("VoiceAgent", () => {
     expect(prompt).toContain("tool search");
     expect(prompt).toContain("המקדמה היא 200 שקלים.");
     expect(prompt).toContain("עדיין לא נשמרו כללים קבועים.");
-    expect(prompt).not.toContain("[הקשר שיחה]"); // per-call context never goes into the (cached) system prompt
+    // Per-call context (caller number, date, time) never goes into the cached system prompt.
+    expect(prompt).not.toContain("מספר המתקשר:");
+    expect(prompt).not.toContain("[סוף הקשר]");
 
     settings.update({ extraInstructions: "תמיד תסיים בברכה." });
     expect(agent.getSystemPrompt()).toContain("תמיד תסיים בברכה.");
