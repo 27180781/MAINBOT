@@ -66,11 +66,14 @@ export async function buildServer() {
     toolTimeoutMs: env.toolTimeoutMs,
   });
 
+  for (const w of env.warnings) logger.warn(w);
   const app = Fastify({
     logger: false,
     trustProxy: env.trustProxy,
+    // The webhook secret travels as a path parameter; Fastify's default limit is 100 chars.
+    maxParamLength: 1024,
     // The PBX accumulates every module result in the query string; allow long URLs.
-    serverFactory: (handler) => http.createServer({ maxHeaderSize: 128 * 1024 }, handler),
+    serverFactory: (handler) => http.createServer({ maxHeaderSize: 512 * 1024 }, handler),
   });
 
   const silence = silenceWav();
@@ -108,6 +111,7 @@ export async function buildServer() {
     logger,
     webhookSecret: env.webhookSecret,
     longPollMs: env.pbxLongPollMs,
+    firstPollMs: env.pbxFirstPollMs,
     publicBaseUrl: env.publicBaseUrl,
   });
   registerAdminRoutes(app, {

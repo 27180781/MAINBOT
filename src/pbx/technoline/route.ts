@@ -17,6 +17,8 @@ export interface TechnolineDeps {
   logger: Logger;
   webhookSecret: string;
   longPollMs: number;
+  /** Shorter wait on the request that carries the utterance, so fast answers need no filler but slow ones don't leave dead air. */
+  firstPollMs?: number;
   publicBaseUrl: string;
 }
 
@@ -66,7 +68,15 @@ export class TechnolineCallFlow {
         session.expectedParam = latest.name;
         // Every earlier utt_N is still in the query string; only the ones with text were real turns.
         session.turns = countSpokenUtterances(req.params, latest.index);
-        logger.warn({ callId: req.callId, param: latest.name, turns: session.turns }, "recovered call without session state");
+        // A PIN the caller already entered is still in the query string too.
+        const pinHash = this.d.settings.get().pinHash;
+        const latestPin = latestNumberedParam(req.params, "pin");
+        if (pinHash && latestPin) {
+          session.pinAttempts = latestPin.index;
+          session.consumed.add(latestPin.name);
+          if (sha256((req.params[latestPin.name] ?? "").replace(/\D/g, "")) === pinHash) session.authorized = true;
+        }
+        logger.warn({ callId: req.callId, param: latest.name, turns: session.turns, authorized: session.authorized }, "recovered call without session state");
       }
     }
     if (session.ended) return hangup();
@@ -117,6 +127,12 @@ export class TechnolineCallFlow {
       if (req.params[expected] !== undefined && !session.consumed.has(expected)) {
         session.consumed.add(expected);
         const text = (req.params[expected] ?? "").trim();
+        // DIGIT_utt_N carries the key pressed to confirm a recording; we send confirm:"no",
+        // so a value here means the PBX ignored it and the caller had to press a key.
+        if ((req.params[`DIGIT_${expected}`] ?? "").trim() && !session.consumed.has("__digit_warned")) {
+          session.consumed.add("__digit_warned");
+          this.d.logger.warn({ callId: req.callId, digit: req.params[`DIGIT_${expected}`] }, "PBX asked the caller to confirm the recording - stt confirm:\"no\" seems unsupported");
+        }
         if (!text) {
           session.silentTurns += 1;
           if (session.silentTurns > s.maxSilentTurns) {
@@ -203,7 +219,9 @@ export class TechnolineCallFlow {
     const job = session.pending!;
     const s = this.d.settings.get();
     const voice = s.ttsVoice || undefined;
-    const result = job.result ?? (await Promise.race([job.promise, sleep(this.d.longPollMs)]));
+    // First wait is short so a slow answer does not mean 20 s of dead air before the first filler.
+    const waitMs = job.fillers === 0 ? Math.min(this.d.firstPollMs ?? this.d.longPollMs, this.d.longPollMs) : this.d.longPollMs;
+    const result = job.result ?? (await Promise.race([job.promise, sleep(waitMs)]));
     if (!result) {
       job.fillers += 1;
       this.d.logger.info({ callId: session.callId, fillers: job.fillers, waitedMs: Date.now() - job.startedAt }, "agent still working - sending filler");
@@ -226,18 +244,30 @@ export class TechnolineCallFlow {
     if (session.ended) return;
     session.ended = true;
     session.endedBy = reason;
-    this.d.usage.recordCall({
-      callId: session.callId,
-      phone: session.phone,
-      startedAt: session.startedAt.toISOString(),
-      endedAt: new Date().toISOString(),
-      turns: session.turns,
-      endedBy: reason,
-    });
-    this.d.logger.info({ callId: session.callId, reason, turns: session.turns }, "call ended");
     // Keep the ended session briefly so the trailing HANGUP request is recognised, then drop it.
     setTimeout(() => this.d.sessions.delete(session.callId), 60_000).unref();
+    this.d.logger.info({ callId: session.callId, reason, turns: session.turns }, "call ended");
+    try {
+      this.d.usage.recordCall({
+        callId: session.callId,
+        phone: session.phone,
+        startedAt: session.startedAt.toISOString(),
+        endedAt: new Date().toISOString(),
+        turns: session.turns,
+        endedBy: reason,
+      });
+    } catch (err) {
+      // A full disk must never change what the PBX hears.
+      this.d.logger.error({ callId: session.callId, err: err instanceof Error ? err.message : String(err) }, "could not record the call in the usage log");
+    }
   }
+}
+
+/** Parses an application/x-www-form-urlencoded body into a plain object (no dependency needed). */
+export function parseFormBody(body: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of new URLSearchParams(body)) out[k] = v;
+  return out;
 }
 
 export function registerTechnolineRoutes(app: FastifyInstance, deps: TechnolineDeps): TechnolineCallFlow {
@@ -256,9 +286,21 @@ export function registerTechnolineRoutes(app: FastifyInstance, deps: TechnolineD
       return reply.header("Content-Type", "application/json; charset=utf-8").send(response);
     } catch (err) {
       deps.logger.error({ err: err instanceof Error ? err.stack : String(err), callId: req.callId }, "PBX handler failed");
+      // After HANGUP there is no caller: the PBX must get an empty 200, never a module.
+      if (req.status === "HANGUP") return reply.header("Content-Type", "application/json; charset=utf-8").send({});
       return reply.header("Content-Type", "application/json; charset=utf-8").send(chain(say("אירעה שגיאה. נסו שוב מאוחר יותר."), hangup()));
     }
   };
+  // The PBX uses GET; the POST variant accepts JSON or form bodies for manual testing.
+  if (!app.hasContentTypeParser("application/x-www-form-urlencoded")) {
+    app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_req, body, done) => {
+      try {
+        done(null, parseFormBody(String(body)));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    });
+  }
   app.get("/pbx/technoline/:secret", handler);
   app.post("/pbx/technoline/:secret", handler);
   return flow;

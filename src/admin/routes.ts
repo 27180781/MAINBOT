@@ -68,6 +68,10 @@ function sinceFor(range: string | undefined, timeZone: string): Date | null {
 export function registerAdminRoutes(app: FastifyInstance, d: AdminDeps): void {
   const enabled = d.adminUser.length > 0 && d.adminPassword.length > 0;
   const chats = new Map<string, ConversationState>();
+  // Conversations snapshot the prompt and tools when they start; drop test chats so the
+  // next message reflects the settings/rules the admin just changed.
+  d.settings.onChange(() => chats.clear());
+  d.rules.onChange(() => chats.clear());
 
   const requireAuth = async (request: FastifyRequest, reply: FastifyReply) => {
     if (!enabled) {

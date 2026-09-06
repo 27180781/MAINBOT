@@ -85,7 +85,15 @@ export function splitForSpeech(raw: string): SpeechSegment[] {
 /** 7-12 consecutive digits that are not part of a decimal number, a date or an amount of money. */
 const LONG_DIGITS_RE = /(?<![\d.,])\d{7,12}(?!\d)(?![.,]\d)(?!\s*(?:שקל|ש"ח|דולר|אירו|אחוז|%))/g;
 
-/** Sentence-aware chunking so each TTS item stays short. */
+/** Sentences shorter than this are glued to their neighbour instead of becoming their own TTS item. */
+const MIN_SENTENCE_CHARS = 24;
+
+/**
+ * One TTS item per sentence: the PBX synthesises each unique string once and serves
+ * exact repeats from cache, so short reusable sentences ("יש עוד משהו?") are faster
+ * and cheaper than one long unique paragraph. Fragments shorter than MIN_SENTENCE_CHARS
+ * are merged with a neighbour, and a single overlong sentence is still split under `max`.
+ */
 export function chunkSentences(text: string, max = MAX_SEGMENT_CHARS): string[] {
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) return [];
@@ -94,11 +102,16 @@ export function chunkSentences(text: string, max = MAX_SEGMENT_CHARS): string[] 
   let cur = "";
   for (const s of sentences) {
     if (!s) continue;
-    if ((cur + " " + s).trim().length > max && cur) {
+    const merged = cur ? `${cur} ${s}` : s;
+    const shortEnough = merged.length <= max;
+    const eitherFragment = cur.length < MIN_SENTENCE_CHARS || s.length < MIN_SENTENCE_CHARS;
+    if (cur && shortEnough && eitherFragment) {
+      cur = merged;
+    } else if (cur) {
       chunks.push(cur.trim());
       cur = s;
     } else {
-      cur = cur ? `${cur} ${s}` : s;
+      cur = s;
     }
     // A single overlong sentence: split on commas / spaces
     while (cur.length > max) {

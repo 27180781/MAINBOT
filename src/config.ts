@@ -24,11 +24,27 @@ function envBool(name: string, def: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(v.toLowerCase());
 }
 
+/** Boot-time warnings about clamped or suspicious values (logged by the server). */
+const warnings: string[] = [];
+
+function clampInt(name: string, value: number, min: number, max: number): number {
+  if (value < min || value > max) {
+    const clamped = Math.min(Math.max(value, min), max);
+    warnings.push(`${name}=${value} is outside ${min}-${max}; using ${clamped}`);
+    return clamped;
+  }
+  return value;
+}
+
+const webhookSecret = process.env.WEBHOOK_SECRET ?? "";
+if (webhookSecret.length > 1000) warnings.push("WEBHOOK_SECRET is longer than 1000 characters; the PBX route would answer 414 - use a shorter secret");
+
 export const env = {
+  warnings,
   port: envInt("PORT", 3000),
   host: process.env.HOST ?? "0.0.0.0",
   publicBaseUrl: (process.env.PUBLIC_BASE_URL ?? "").replace(/\/+$/, ""),
-  webhookSecret: process.env.WEBHOOK_SECRET ?? "",
+  webhookSecret,
   adminUser: process.env.ADMIN_USER ?? "",
   adminPassword: process.env.ADMIN_PASSWORD ?? "",
   dataDir: path.resolve(process.env.DATA_DIR ?? "./data"),
@@ -37,8 +53,10 @@ export const env = {
   instructionsPath: path.resolve(process.env.INSTRUCTIONS_PATH ?? "./config/instructions.md"),
   timezone: process.env.TIMEZONE ?? "Asia/Jerusalem",
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
-  /** Max wall-clock time a single PBX request may wait for the agent before a filler is sent. */
-  pbxLongPollMs: envInt("PBX_LONG_POLL_MS", 20_000),
+  /** Max wall-clock time a single PBX request may wait for the agent before a filler is sent (PBX times out at ~30 s). */
+  pbxLongPollMs: clampInt("PBX_LONG_POLL_MS", envInt("PBX_LONG_POLL_MS", 20_000), 1_000, 25_000),
+  /** Wait on the request that carries the utterance itself; fast answers need no filler at all. */
+  pbxFirstPollMs: clampInt("PBX_FIRST_POLL_MS", envInt("PBX_FIRST_POLL_MS", 6_000), 500, 25_000),
   /** Upper bound for one agent turn (all tool calls included). */
   agentTimeoutMs: envInt("AGENT_TIMEOUT_MS", 180_000),
   /** Upper bound for one MCP tool call. */
@@ -59,7 +77,8 @@ export type Effort = (typeof EFFORT_LEVELS)[number];
 export const SettingsSchema = z.object({
   model: z.string().min(1).default(process.env.BOT_MODEL || "claude-opus-5"),
   effort: z.enum(EFFORT_LEVELS).default((process.env.BOT_EFFORT as Effort) || "medium"),
-  maxTokens: z.number().int().min(256).max(64_000).default(envInt("BOT_MAX_TOKENS", 4096)),
+  /** Shared between adaptive thinking and the spoken answer, so leave thinking room. */
+  maxTokens: z.number().int().min(256).max(64_000).default(envInt("BOT_MAX_TOKENS", 8192)),
   /** "default" enables Anthropic's server-side refusal fallback chain; "off" disables it. */
   fallbacks: z.enum(["default", "off"]).default((process.env.BOT_FALLBACKS as "default" | "off") || "default"),
   toolSearch: z.boolean().default(envBool("TOOL_SEARCH", true)),
@@ -95,7 +114,8 @@ export const SettingsSchema = z.object({
     "create_repository",
   ]),
   sttMaxSeconds: z.number().int().min(1).max(10).default(envInt("STT_MAX_SECONDS", 10)),
-  maxTurns: z.number().int().min(1).max(500).default(60),
+  /** Every turn adds ~1 KB to the query string the PBX re-sends; 150 turns stay far below the 512 KB header budget. */
+  maxTurns: z.number().int().min(1).max(150).default(60),
   maxSilentTurns: z.number().int().min(1).max(10).default(2),
   extraInstructions: z.string().default(""),
 });

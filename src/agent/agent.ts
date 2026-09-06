@@ -21,6 +21,43 @@ export interface ConversationState {
   turn: number;
   gate: ConfirmationGate;
   contextSent: boolean;
+  /**
+   * System prompt and tool list frozen for the whole call: rebuilding them mid-call
+   * (a rule saved by the caller, a server reconnecting) would invalidate the prompt
+   * cache and, on models that bind thinking blocks to the prompt, fail the request.
+   * New calls pick up the latest prompt.
+   */
+  systemPrompt: string;
+  tools: BetaToolUnion[];
+}
+
+/** What the Messages API accepts per model family (see the claude-api reference). */
+export interface ModelCapabilities {
+  adaptiveThinking: boolean;
+  /** Effort levels the model accepts; empty = do not send output_config.effort. */
+  efforts: readonly string[];
+  /** Server-side refusal fallbacks ("default") are documented for these families only. */
+  fallbacks: boolean;
+}
+
+export function modelCapabilities(model: string): ModelCapabilities {
+  const m = model.toLowerCase();
+  if (/^claude-(opus|fable|mythos)-5/.test(m)) return { adaptiveThinking: true, efforts: ["low", "medium", "high", "xhigh", "max"], fallbacks: /^claude-(opus|fable|mythos)-5/.test(m) };
+  if (/^claude-sonnet-5/.test(m) || /^claude-(opus|sonnet)-4-[78]/.test(m)) return { adaptiveThinking: true, efforts: ["low", "medium", "high", "xhigh", "max"], fallbacks: false };
+  if (/^claude-(opus|sonnet)-4-6/.test(m)) return { adaptiveThinking: true, efforts: ["low", "medium", "high", "max"], fallbacks: false };
+  if (/^claude-opus-4-5/.test(m)) return { adaptiveThinking: false, efforts: ["low", "medium", "high"], fallbacks: false };
+  // Haiku 4.5, Sonnet 4.5 and older: manual thinking budgets only, no effort parameter.
+  return { adaptiveThinking: false, efforts: [], fallbacks: false };
+}
+
+/** Clamps a requested effort to the closest level the model supports. */
+export function clampEffort(effort: string, caps: ModelCapabilities): string | undefined {
+  if (caps.efforts.length === 0) return undefined;
+  if (caps.efforts.includes(effort)) return effort;
+  const order = ["low", "medium", "high", "xhigh", "max"];
+  const wanted = order.indexOf(effort);
+  for (let i = wanted; i >= 0; i--) if (caps.efforts.includes(order[i]!)) return order[i];
+  return caps.efforts[0];
 }
 
 export interface AgentReply {
@@ -95,7 +132,23 @@ export class VoiceAgent {
       turn: 0,
       gate: new ConfirmationGate({ confirmWrites: s.confirmWrites, blockedTools: s.blockedTools }),
       contextSent: false,
+      systemPrompt: this.systemPrompt,
+      tools: this.toolsCache,
     };
+  }
+
+  /** Request parameters that depend on the selected model and effort. */
+  private modelParams(model: string, effort: string): { thinking?: Anthropic.Beta.BetaThinkingConfigParam; output_config?: Anthropic.Beta.BetaOutputConfig; fallbacks?: "default"; betas?: Anthropic.Beta.AnthropicBeta[] } {
+    const caps = modelCapabilities(model);
+    const out: ReturnType<VoiceAgent["modelParams"]> = {};
+    if (caps.adaptiveThinking) out.thinking = { type: "adaptive" };
+    const clamped = clampEffort(effort, caps);
+    if (clamped) out.output_config = { effort: clamped as Anthropic.Beta.BetaOutputConfig["effort"] };
+    if (caps.fallbacks && this.o.settings.get().fallbacks === "default") {
+      out.fallbacks = "default";
+      out.betas = ["server-side-fallback-2026-07-01" as Anthropic.Beta.AnthropicBeta];
+    }
+    return out;
   }
 
   private buildTools(s: Settings, catalog: CatalogTool[]): BetaToolUnion[] {
@@ -147,26 +200,24 @@ export class VoiceAgent {
     let finalText = "";
     let error: string | undefined;
 
+    let maxTokens = s.maxTokens;
+    let budgetRetried = false;
+    let contextRetried = false;
     try {
       while (iterations < s.maxIterationsPerTurn) {
         iterations++;
         const reqStarted = Date.now();
-        const betas: string[] = [];
-        if (s.fallbacks === "default") betas.push("server-side-fallback-2026-07-01");
         const response = await this.o.client.beta.messages.create(
           {
             model: s.model,
-            max_tokens: s.maxTokens,
-            system: [{ type: "text", text: this.systemPrompt, cache_control: { type: "ephemeral" } }],
+            max_tokens: maxTokens,
+            system: [{ type: "text", text: conv.systemPrompt, cache_control: { type: "ephemeral" } }],
             // Automatic breakpoint on the last cacheable block: the growing conversation (tool
             // results included) is read from cache on every iteration instead of re-sent in full.
             cache_control: { type: "ephemeral" },
             messages: conv.messages,
-            tools: this.toolsCache,
-            thinking: { type: "adaptive" },
-            output_config: { effort: s.effort },
-            ...(s.fallbacks === "default" ? { fallbacks: "default" as const } : {}),
-            ...(betas.length ? { betas: betas as Anthropic.Beta.AnthropicBeta[] } : {}),
+            tools: conv.tools,
+            ...this.modelParams(s.model, s.effort),
           },
           { signal: abort.signal, timeout: 120_000 },
         );
@@ -190,17 +241,33 @@ export class VoiceAgent {
           break;
         }
 
-        conv.messages.push({ role: "assistant", content: response.content });
+        // The whole context no longer fits: summarise and retry this iteration once.
+        if (response.stop_reason === "model_context_window_exceeded" && !contextRetried) {
+          contextRetried = true;
+          this.log.warn({ callId: conv.callId }, "context window exceeded - compacting and retrying");
+          await this.compact(conv, s, abort.signal);
+          continue;
+        }
+
         const text = response.content
           .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
           .map((b) => b.text)
           .join("\n")
           .trim();
+        const toolUses = response.content.filter((b): b is BetaToolUseBlock => b.type === "tool_use");
+
+        // Thinking ate the whole output budget (no text, no tool call): retry once with more room.
+        if (response.stop_reason === "max_tokens" && !text && toolUses.length === 0 && !budgetRetried) {
+          budgetRetried = true;
+          maxTokens = Math.min(Math.max(maxTokens * 4, 8192), 32_000);
+          this.log.warn({ callId: conv.callId, maxTokens }, "response truncated before any text - retrying with a larger max_tokens");
+          continue;
+        }
+
+        conv.messages.push({ role: "assistant", content: response.content });
         if (text) finalText = text;
 
         if (response.stop_reason === "pause_turn") continue;
-
-        const toolUses = response.content.filter((b): b is BetaToolUseBlock => b.type === "tool_use");
         if (toolUses.length === 0) break;
 
         const results = await Promise.all(
@@ -217,11 +284,13 @@ export class VoiceAgent {
         );
         conv.messages.push({ role: "user", content: results });
 
+        // The farewell was already spoken in this response; another round-trip would only add latency.
+        if (endCall) break;
         if (response.stop_reason !== "tool_use") break;
       }
       if (!finalText) finalText = endCall ? s.goodbye : "לא הצלחתי לנסח תשובה. אפשר לחזור על הבקשה?";
     } catch (err) {
-      const spoken = this.describeError(err);
+      const spoken = this.describeError(err, abort.signal.aborted);
       error = err instanceof Error ? err.message : String(err);
       this.log.error({ callId: conv.callId, err: error }, "agent turn failed");
       finalText = spoken;
@@ -279,19 +348,24 @@ export class VoiceAgent {
     return r;
   }
 
-  private describeError(err: unknown): string {
+  private describeError(err: unknown, aborted = false): string {
+    // The SDK raises APIUserAbortError (an APIError subclass) when our timeout fires, so check it first.
+    if (aborted || err instanceof Anthropic.APIUserAbortError || (err instanceof Error && err.name === "AbortError")) return "הפעולה לקחה יותר מדי זמן. אפשר לנסות בקשה קטנה יותר?";
     if (err instanceof Anthropic.AuthenticationError) return "יש בעיה בהגדרות החיבור למנוע הבינה. כדאי לבדוק את מפתח ה-API.";
     if (err instanceof Anthropic.RateLimitError) return "יש עומס רגעי על המערכת. נסו שוב בעוד רגע.";
     if (err instanceof Anthropic.BadRequestError) return "נתקלתי בשגיאה בבקשה. אפשר לנסח מחדש?";
     if (err instanceof Anthropic.APIConnectionError) return "אין לי כרגע חיבור למנוע הבינה. נסו שוב בעוד רגע.";
     if (err instanceof Anthropic.APIError) return "המערכת החזירה שגיאה. נסו שוב.";
-    if (err instanceof Error && err.name === "AbortError") return "הפעולה לקחה יותר מדי זמן. אפשר לנסות בקשה קטנה יותר?";
     return "משהו השתבש אצלי. אפשר לחזור על הבקשה?";
   }
 
   /** Very long calls: summarise the transcript with the same model and start fresh. */
   private async maybeCompact(conv: ConversationState, s: Settings): Promise<void> {
     if (conv.messages.length < MAX_HISTORY_MESSAGES) return;
+    await this.compact(conv, s);
+  }
+
+  private async compact(conv: ConversationState, s: Settings, signal?: AbortSignal): Promise<void> {
     try {
       const transcript = conv.messages
         .map((m) => {
@@ -299,13 +373,19 @@ export class VoiceAgent {
           return `${m.role}: ${text}`;
         })
         .join("\n");
-      const res = await this.o.client.beta.messages.create({
-        model: s.model,
-        max_tokens: 1500,
-        output_config: { effort: "low" },
-        messages: [{ role: "user", content: `סכם את השיחה הבאה בעברית ב-10 שורות לכל היותר, כולל עובדות, החלטות ופעולות שבוצעו או שממתינות לאישור:\n\n${transcript.slice(-40_000)}` }],
-      });
-      const summary = res.content.filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text").map((b) => b.text).join("\n");
+      const { fallbacks: _f, betas: _b, ...modelParams } = this.modelParams(s.model, "low");
+      const res = await this.o.client.beta.messages.create(
+        {
+          model: s.model,
+          // Thinking shares this budget with the visible summary, so leave it room.
+          max_tokens: 4000,
+          ...modelParams,
+          messages: [{ role: "user", content: `סכם את השיחה הבאה בעברית ב-10 שורות לכל היותר, כולל עובדות, החלטות ופעולות שבוצעו או שממתינות לאישור:\n\n${transcript.slice(-40_000)}` }],
+        },
+        { signal, timeout: 60_000 },
+      );
+      const summary = res.content.filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text").map((b) => b.text).join("\n").trim();
+      if (res.stop_reason !== "end_turn" || !summary) throw new Error(`compaction returned stop_reason=${res.stop_reason} with ${summary.length} chars`);
       this.o.usage.recordLlm({
         callId: conv.callId,
         phone: conv.phone,
@@ -324,12 +404,32 @@ export class VoiceAgent {
         { role: "assistant", content: "הבנתי, ממשיכים." },
       ];
     } catch (err) {
-      this.log.warn({ err: err instanceof Error ? err.message : String(err) }, "compaction failed - dropping oldest turns instead");
-      conv.messages = conv.messages.slice(-20);
-      // Never start with a tool_result-only user message
-      while (conv.messages.length && (conv.messages[0]!.role !== "user" || typeof conv.messages[0]!.content !== "string")) conv.messages.shift();
+      this.log.warn({ err: err instanceof Error ? err.message : String(err) }, "compaction failed - keeping a text-only tail instead");
+      conv.messages = textOnlyTail(conv.messages, 12);
     }
   }
+}
+
+/**
+ * Fallback history when summarising fails: the last `turns` caller/assistant exchanges
+ * as plain text. Thinking, tool_use and tool_result blocks are dropped on purpose - a
+ * truncated history must not carry thinking blocks bound to context that is gone.
+ */
+export function textOnlyTail(messages: BetaMessageParam[], turns: number): BetaMessageParam[] {
+  const out: BetaMessageParam[] = [];
+  for (const m of messages) {
+    const text = typeof m.content === "string" ? m.content : m.content.filter((b): b is Anthropic.Beta.BetaTextBlockParam => b.type === "text").map((b) => b.text).join("\n");
+    if (!text.trim()) continue;
+    const last = out[out.length - 1];
+    if (last && last.role === m.role) last.content = `${last.content as string}\n${text}`;
+    else out.push({ role: m.role, content: text });
+  }
+  // Start on a user message and end on an assistant message.
+  while (out.length && out[0]!.role !== "user") out.shift();
+  const tail = out.slice(-(turns * 2));
+  while (tail.length && tail[0]!.role !== "user") tail.shift();
+  if (tail.length && tail[tail.length - 1]!.role === "user") tail.pop();
+  return tail;
 }
 
 function describeTool(t: CatalogTool): string {
