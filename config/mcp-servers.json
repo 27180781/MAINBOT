@@ -24,10 +24,11 @@
       "label": "ימות המשיח",
       "description": "קווי טלפון, שלוחות, קמפיינים, SMS, דוחות שיחות",
       "url": "https://REPLACE-WITH-YOUR-YEMOT-MCP-URL/mcp",
+      "$comment": "מלאו את כתובת ה-MCP של ימות המשיח (מהמחבר ב-claude.ai) ושנו enabled ל-true",
       "auth": {
         "type": "oauth"
       },
-      "enabled": true,
+      "enabled": false,
       "alwaysLoad": [
         "get_system_overview",
         "list_lines",

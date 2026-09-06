@@ -42,9 +42,12 @@ export async function buildServer() {
   const sessions = new SessionStore(env.sessionTtlMs);
   const mcpConfig = loadMcpConfig(env.mcpConfigPath);
   const baseUrl = env.publicBaseUrl || `http://localhost:${env.port}`;
+  // SEP-991 client metadata document: only meaningful (and only accepted) over HTTPS.
+  const clientMetadataUrl = baseUrl.startsWith("https://") ? `${baseUrl}/oauth/client-metadata.json` : undefined;
   const hub = new McpHub(mcpConfig, {
     authDir: env.mcpAuthDir,
     redirectUrlFor: (name) => `${baseUrl}/oauth/callback/${name}`,
+    clientMetadataUrl,
     logger,
     toolTimeoutMs: env.toolTimeoutMs,
     maxToolResultChars: env.maxToolResultChars,
@@ -79,6 +82,23 @@ export async function buildServer() {
     model: settings.get().model,
   }));
   app.get("/", async (_req, reply) => reply.redirect("/admin"));
+
+  // OAuth client metadata document (SEP-991). Public by design: authorization servers
+  // fetch it to learn our redirect URIs instead of relying on dynamic registration.
+  app.get("/oauth/client-metadata.json", async (_req, reply) => {
+    if (!clientMetadataUrl) return reply.code(404).send({ error: "PUBLIC_BASE_URL must be an https:// URL" });
+    return reply
+      .header("Cache-Control", "public, max-age=300")
+      .send({
+        client_id: clientMetadataUrl,
+        client_name: "MAINBOT Phone Agent",
+        client_uri: baseUrl,
+        redirect_uris: hub.serverConfigs().map((s) => `${baseUrl}/oauth/callback/${s.name}`),
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "none",
+      });
+  });
 
   const flow = registerTechnolineRoutes(app, {
     agent,

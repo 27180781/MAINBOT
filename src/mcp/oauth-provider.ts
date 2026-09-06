@@ -25,12 +25,22 @@ export class FileOAuthProvider implements OAuthClientProvider {
   private readonly file: string;
   public onRedirect?: (url: URL) => void | Promise<void>;
 
+  /**
+   * SEP-991 "URL-based client id": an HTTPS URL where this bot publishes its own client
+   * metadata document. Authorization servers that advertise
+   * `client_id_metadata_document_supported` (Lovable, for example) accept it instead of
+   * dynamic client registration, which some of them restrict to localhost redirects.
+   */
+  public readonly clientMetadataUrl?: string;
+
   constructor(
     public readonly serverName: string,
     private readonly redirect: string,
     authDir: string,
     private readonly scope?: string,
+    clientMetadataUrl?: string,
   ) {
+    if (clientMetadataUrl) this.clientMetadataUrl = clientMetadataUrl;
     fs.mkdirSync(authDir, { recursive: true });
     this.file = path.join(authDir, `${serverName}.json`);
     this.data = this.read();

@@ -63,6 +63,8 @@ export interface McpHubOptions {
   authDir: string;
   /** Redirect URL used for OAuth logins started from this process (admin UI or CLI). */
   redirectUrlFor: (serverName: string) => string;
+  /** HTTPS URL of our client metadata document (served by the server) for SEP-991 logins. */
+  clientMetadataUrl?: string;
   logger: Logger;
   toolTimeoutMs?: number;
   maxToolResultChars?: number;
@@ -131,7 +133,7 @@ export class McpHub {
 
   private providerFor(c: Connection): FileOAuthProvider | null {
     if (c.config.auth.type !== "oauth") return null;
-    if (!c.provider) c.provider = new FileOAuthProvider(c.config.name, this.opts.redirectUrlFor(c.config.name), this.opts.authDir, oauthScope(c.config));
+    if (!c.provider) c.provider = new FileOAuthProvider(c.config.name, this.opts.redirectUrlFor(c.config.name), this.opts.authDir, oauthScope(c.config), this.opts.clientMetadataUrl);
     return c.provider;
   }
 
