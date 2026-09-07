@@ -127,6 +127,24 @@ export const SettingsSchema = z.object({
   maxTurns: z.number().int().min(1).max(150).default(60),
   maxSilentTurns: z.number().int().min(1).max(10).default(2),
   extraInstructions: z.string().default(""),
+
+  /* ---- proactive routines & owner notifications ---- */
+  routinesEnabled: z.boolean().default(true),
+  /** The owner's phone for WhatsApp / SMS notifications (any Israeli format). */
+  ownerPhone: z.string().default(process.env.OWNER_PHONE ?? ""),
+  ownerEmail: z.string().default(process.env.OWNER_EMAIL ?? ""),
+  /** Default delivery channel for routines created by voice/chat. */
+  notifyChannel: z.enum(["log", "whatsapp", "sms", "email"]).default("log"),
+  /** Per-channel MCP tool templates ({{text}}, {{subject}}, {{ownerPhone}}, {{ownerPhoneIntl}}, {{ownerEmail}}). */
+  notifyTemplates: z
+    .record(z.string(), z.object({ server: z.string().min(1), tool: z.string().min(1), args: z.record(z.string(), z.unknown()) }))
+    .default({
+      whatsapp: { server: "crm", tool: "send_whatsapp", args: { to: "{{ownerPhoneIntl}}", message: "{{text}}" } },
+      sms: { server: "yemot", tool: "send_sms", args: { phones: "{{ownerPhone}}", message: "{{text}}", confirm: true } },
+      email: { server: "crm", tool: "send_email", args: { to: "{{ownerEmail}}", subject: "{{subject}}", content: "{{text}}" } },
+    }),
+  /** Scheduled routines do not run inside this window (local time). */
+  quietHours: z.object({ from: z.string().regex(/^\d{1,2}:\d{2}$/), to: z.string().regex(/^\d{1,2}:\d{2}$/) }).default({ from: "22:00", to: "07:00" }),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;

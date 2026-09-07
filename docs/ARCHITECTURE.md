@@ -31,7 +31,11 @@ Developer reference for the Hebrew voice assistant that sits between the Technol
 | `src/calls/session.ts` | `CallSession` / `PendingJob` types and the in-memory `SessionStore` with TTL sweep. |
 | `src/agent/agent.ts` | `VoiceAgent`: builds the tool list (tool search + deferred MCP tools + local tools), runs the Claude tool loop per caller turn, applies the confirmation gate, records usage, compacts long histories. |
 | `src/agent/prompt.ts` | Cacheable system prompt (voice style, tool rules, business instructions, standing rules) and the per-call context block (caller, Gregorian + Hebrew date, time). |
-| `src/agent/local-tools.ts` | Tools implemented in-process: `end_call`, `list_rules`, `add_rule`, `update_rule`, `remove_rule`. |
+| `src/agent/local-tools.ts` | Tools implemented in-process: `end_call`, `list_rules`, `add_rule`, `update_rule`, `remove_rule`, `list_routines`, `add_routine`, `toggle_routine`, `remove_routine`, and (proactive runs only) `notify_owner`. |
+| `src/routines/store.ts` | `RoutineStore` - proactive routines (cron / interval / event / manual) persisted to `data/routines.json`. |
+| `src/routines/cron.ts` | Dependency-free 5-field cron matcher and next-run calculator evaluated in the configured time zone; quiet-hours check. |
+| `src/routines/runner.ts` | `RoutineRunner` - 30 s tick, event dispatch, manual runs; runs each routine as a serialised `proactive` conversation and records the result. |
+| `src/routines/notify.ts` | `Notifier` - delivers `notify_owner` messages through MCP tools (channel -> tool templates in settings): WhatsApp/email via the CRM, SMS via Yemot, or log only. |
 | `src/agent/rules.ts` | `RulesStore` - standing rules dictated by the owner, persisted to `data/rules.json`, rendered into the prompt. |
 | `src/agent/speech-text.ts` | Normalises model output for Hebrew TTS (strips markdown/URLs/emoji, expands symbols), splits into short segments, extracts phone numbers and long digit runs as `digits` items. |
 | `src/mcp/config.ts` | zod schema for `config/mcp-servers.json`, `${ENV}` interpolation, static auth headers. |
@@ -125,6 +129,7 @@ Managed by `SettingsStore`; defaults come from the environment at boot, stored v
 |---|---|---|
 | `data/settings.json` | Runtime settings (above), including the PIN hash and the allow-list. | Written on every save from `/admin`. |
 | `data/rules.json` | `{ nextId, rules: [{id, text, createdAt, updatedAt, source}] }` - standing rules. | Written atomically (tmp + rename). Max 200 rules, 600 chars each. |
+| `data/routines.json` | `{ routines: [{id, name, enabled, schedule, prompt, channel, quietHours, source, lastRunAt, lastResult}] }` - proactive routines. | Written atomically. Max 100 routines. |
 | `data/usage/YYYY-MM.jsonl` | One JSON event per line: `llm` (tokens, model, cost estimate, stop reason), `tool` (name, server, duration, ok/blocked), `turn` (caller text + assistant text), `call` (start/end, turns, reason). | All files are loaded into memory at boot; archive old months elsewhere if the directory grows large. Contains transcripts - treat as sensitive. |
 | `.mcp-auth/<server>.json` | OAuth tokens, registered client, PKCE verifier, `state`, discovery state, redirect URL. | Mode 0600. Deleted by "logout". Re-registered when the redirect URL changes (CLI vs admin). |
 | `config/mcp-servers.json` | Server list. | Read once at boot. |
@@ -147,6 +152,9 @@ Nothing else is persisted: call sessions, admin chat sessions and the tool catal
 | `GET /admin/api/calls/:callId` | basic | All usage events of one call (transcript). |
 | `GET /admin/api/prompt` | basic | Current system prompt. |
 | `GET/POST/PUT/DELETE /admin/api/rules[/:id]` | basic | Standing rules CRUD (`PUT /admin/api/rules` replaces all). |
+| `GET/POST/PUT/DELETE /admin/api/routines[/:id]`, `POST /admin/api/routines/:id/run`, `GET /admin/api/routines/:id/runs` | basic | Proactive routines CRUD, run now, run log. |
+| `POST /admin/api/notify/test` | basic | Sends a test message on a notification channel. |
+| `POST /api/v1/events` | bearer (`CHAT_API_KEY`) | External event -> runs the routines subscribed to `type` (202, background). |
 | `GET/PUT /admin/api/instructions` | basic | Read / write `config/instructions.md`. |
 | `POST /admin/api/chat` | basic | Text chat with the agent (`message`, `sessionId`, `reset`). |
 | `POST /admin/api/mcp/:name/reconnect`, `/logout` | basic | Server actions. |

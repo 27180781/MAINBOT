@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import Fastify from "fastify";
 import { registerChatApi } from "../src/api/chat.js";
 import type { VoiceAgent, ConversationState, AgentReply } from "../src/agent/agent.js";
+import type { RoutineRunner } from "../src/routines/runner.js";
 import type { Logger } from "../src/logger.js";
 
 const KEY = "test-chat-api-key-0123456789";
@@ -14,7 +15,7 @@ function fakeLogger(): Logger {
 
 function fakeAgent() {
   const newConversation = vi.fn((callId: string, phone: string, opts?: { channel?: string }) => ({ callId, phone, channel: opts?.channel, messages: [], turn: 0 }) as unknown as ConversationState);
-  const respond = vi.fn(async (conv: ConversationState, text: string): Promise<AgentReply> => ({
+  const respond = vi.fn(async (conv: ConversationState, text: string, _ctx?: { phone: string; channel?: string; userName?: string }): Promise<AgentReply> => ({
     text: `echo(${conv.callId}): ${text}`,
     endCall: false,
     iterations: 1,
@@ -27,10 +28,49 @@ function fakeAgent() {
 describe("chat API", () => {
   const app = Fastify();
   const parts = fakeAgent();
+  const dispatchEvent = vi.fn((type: string, _payload: unknown) => (type === "new_lead" ? ["rt_abc123"] : []));
 
   beforeAll(async () => {
-    registerChatApi(app, { agent: parts.agent, logger: fakeLogger(), apiKey: KEY, corsOrigins: ["https://crm.example.com"], sessionTtlMs: 60_000 });
+    registerChatApi(app, { agent: parts.agent, runner: { dispatchEvent } as unknown as RoutineRunner, logger: fakeLogger(), apiKey: KEY, corsOrigins: ["https://crm.example.com"], sessionTtlMs: 60_000 });
     await app.ready();
+  });
+
+  it("accepts events and hands them to the routine runner", async () => {
+    const anon = await app.inject({ method: "POST", url: "/api/v1/events", payload: { type: "new_lead" } });
+    expect(anon.statusCode).toBe(401);
+
+    const ok = await app.inject({ method: "POST", url: "/api/v1/events", headers: { authorization: `Bearer ${KEY}` }, payload: { type: "new_lead", payload: { name: "דני", phone: "0501234567" } } });
+    expect(ok.statusCode).toBe(202);
+    expect(ok.json()).toEqual({ ok: true, type: "new_lead", routines: ["rt_abc123"] });
+    expect(dispatchEvent).toHaveBeenCalledWith("new_lead", { name: "דני", phone: "0501234567" });
+
+    const none = await app.inject({ method: "POST", url: "/api/v1/events", headers: { authorization: `Bearer ${KEY}` }, payload: { type: "payment_received" } });
+    expect(none.statusCode).toBe(202);
+    expect(none.json()).toEqual({ ok: true, type: "payment_received", routines: [] });
+    expect(dispatchEvent).toHaveBeenLastCalledWith("payment_received", undefined);
+
+    const bad = await app.inject({ method: "POST", url: "/api/v1/events", headers: { authorization: `Bearer ${KEY}` }, payload: { type: "bad type!" } });
+    expect(bad.statusCode).toBe(400);
+    const missing = await app.inject({ method: "POST", url: "/api/v1/events", headers: { authorization: `Bearer ${KEY}` }, payload: {} });
+    expect(missing.statusCode).toBe(400);
+    const huge = await app.inject({ method: "POST", url: "/api/v1/events", headers: { authorization: `Bearer ${KEY}` }, payload: { type: "x", payload: "a".repeat(30_000) } });
+    expect(huge.statusCode).toBe(413);
+
+    const preflight = await app.inject({ method: "OPTIONS", url: "/api/v1/events", headers: { origin: "https://crm.example.com" } });
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers["access-control-allow-origin"]).toBe("https://crm.example.com");
+  });
+
+  it("answers 503 for events when no runner is configured", async () => {
+    const bare = Fastify();
+    registerChatApi(bare, { agent: parts.agent, logger: fakeLogger(), apiKey: KEY, corsOrigins: [], sessionTtlMs: 60_000 });
+    await bare.ready();
+    try {
+      const res = await bare.inject({ method: "POST", url: "/api/v1/events", headers: { authorization: `Bearer ${KEY}` }, payload: { type: "new_lead" } });
+      expect(res.statusCode).toBe(503);
+    } finally {
+      await bare.close();
+    }
   });
 
   afterAll(async () => {

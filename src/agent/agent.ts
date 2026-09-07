@@ -5,8 +5,10 @@ import { ConfirmationGate } from "../mcp/tool-policy.js";
 import type { Settings, SettingsStore } from "../config.js";
 import type { UsageStore } from "../usage/usage-store.js";
 import { buildSystemPrompt, buildCallContext, type CallContext } from "./prompt.js";
-import { LOCAL_TOOLS, END_CALL_TOOL, LOCAL_TOOL_NAMES, LOCAL_WRITE_TOOLS, runLocalTool } from "./local-tools.js";
+import { LOCAL_TOOLS, PROACTIVE_TOOLS, END_CALL_TOOL, LOCAL_TOOL_NAMES, LOCAL_WRITE_TOOLS, runLocalTool } from "./local-tools.js";
 import type { RulesStore } from "./rules.js";
+import type { RoutineStore, NotifyChannel } from "../routines/store.js";
+import type { Notifier } from "../routines/notify.js";
 
 type BetaMessageParam = Anthropic.Beta.BetaMessageParam;
 type BetaToolUnion = Anthropic.Beta.BetaToolUnion;
@@ -29,6 +31,13 @@ export interface ConversationState {
    */
   systemPrompt: string;
   tools: BetaToolUnion[];
+  channel: Channel;
+  /** proactive = a routine run with nobody on the line: read-only tools plus notify_owner. */
+  mode: "interactive" | "proactive";
+  /** Owner notifications sent during this conversation (proactive runs). */
+  notifications: Array<{ channel: string; ok: boolean; detail: string }>;
+  routineId?: string;
+  routineChannel?: NotifyChannel;
 }
 
 /** What the Messages API accepts per model family (see the claude-api reference). */
@@ -75,6 +84,9 @@ export interface VoiceAgentOptions {
   settings: SettingsStore;
   usage: UsageStore;
   rules: RulesStore;
+  /** Optional: proactive routines (list/add from a call) and the owner notifier used by routine runs. */
+  routines?: RoutineStore;
+  notifier?: Notifier;
   logger: Logger;
   instructionsPath: string;
   timeZone: string;
@@ -90,12 +102,14 @@ const REFUSAL_TEXT = "מצטער, אני לא יכול לעזור עם הבקש�
  * the agent runs the tool loop (MCP tools + local tools) until Claude produces a
  * spoken answer, and records token usage for the admin dashboard.
  */
-export type Channel = "voice" | "chat";
+export type Channel = "voice" | "chat" | "proactive";
 
 export class VoiceAgent {
   private systemPrompt = "";
   private chatPrompt = "";
+  private proactivePrompt = "";
   private toolsCache: BetaToolUnion[] = [];
+  private toolsCacheProactive: BetaToolUnion[] = [];
   private toolsCacheKey = "";
   private readonly log: Logger;
 
@@ -120,16 +134,25 @@ export class VoiceAgent {
     };
     this.systemPrompt = buildSystemPrompt({ ...inputs, channel: "voice" });
     this.chatPrompt = buildSystemPrompt({ ...inputs, channel: "chat" });
+    this.proactivePrompt = buildSystemPrompt({ ...inputs, channel: "proactive" });
     this.toolsCache = this.buildTools(s, this.o.hub.tools());
+    this.toolsCacheProactive = this.buildTools(s, this.o.hub.tools(), "proactive");
     this.toolsCacheKey = `${s.toolSearch}:${s.toolSearchVariant}:${this.o.hub.tools().length}`;
   }
 
   getSystemPrompt(channel: Channel = "voice"): string {
-    return channel === "chat" ? this.chatPrompt : this.systemPrompt;
+    return channel === "chat" ? this.chatPrompt : channel === "proactive" ? this.proactivePrompt : this.systemPrompt;
   }
 
-  newConversation(callId: string, phone: string, opts: { channel?: Channel } = {}): ConversationState {
+  /** Tool definitions offered to the model for the given channel. */
+  getTools(channel: Channel = "voice"): BetaToolUnion[] {
+    return channel === "proactive" ? this.toolsCacheProactive : this.toolsCache;
+  }
+
+  newConversation(callId: string, phone: string, opts: { channel?: Channel; routine?: { id: string; channel: NotifyChannel } } = {}): ConversationState {
     const s = this.o.settings.get();
+    const channel = opts.channel ?? "voice";
+    const proactive = channel === "proactive";
     return {
       callId,
       phone,
@@ -137,8 +160,12 @@ export class VoiceAgent {
       turn: 0,
       gate: new ConfirmationGate({ confirmWrites: s.confirmWrites, blockedTools: s.blockedTools }),
       contextSent: false,
-      systemPrompt: this.getSystemPrompt(opts.channel ?? "voice"),
-      tools: this.toolsCache,
+      systemPrompt: this.getSystemPrompt(channel),
+      tools: this.getTools(channel),
+      channel,
+      mode: proactive ? "proactive" : "interactive",
+      notifications: [],
+      ...(opts.routine ? { routineId: opts.routine.id, routineChannel: opts.routine.channel } : {}),
     };
   }
 
@@ -156,8 +183,14 @@ export class VoiceAgent {
     return out;
   }
 
-  private buildTools(s: Settings, catalog: CatalogTool[]): BetaToolUnion[] {
+  /**
+   * Interactive calls get every tool (writes are gated by spoken confirmation). Proactive runs
+   * get only read tools - there is nobody to confirm a write - plus notify_owner.
+   */
+  private buildTools(s: Settings, catalog: CatalogTool[], mode: "interactive" | "proactive" = "interactive"): BetaToolUnion[] {
     const tools: BetaToolUnion[] = [];
+    const proactive = mode === "proactive";
+    if (proactive) catalog = catalog.filter((t) => t.kind !== "write");
     const useSearch = s.toolSearch && catalog.length > 0;
     if (useSearch) {
       tools.push(
@@ -166,7 +199,8 @@ export class VoiceAgent {
           : { type: "tool_search_tool_regex_20251119", name: "tool_search_tool_regex" },
       );
     }
-    tools.push(...LOCAL_TOOLS);
+    if (proactive) tools.push(...LOCAL_TOOLS.filter((t) => t.name !== END_CALL_TOOL && !LOCAL_WRITE_TOOLS.has(t.name)), ...PROACTIVE_TOOLS);
+    else tools.push(...LOCAL_TOOLS);
     for (const t of catalog) {
       const def: Anthropic.Beta.BetaTool = {
         name: t.fullName,
@@ -283,7 +317,7 @@ export class VoiceAgent {
               return { type: "tool_result", tool_use_id: tu.id, content: "The call will end after your message is spoken." };
             }
             toolCalls.push(tu.name);
-            const r = LOCAL_TOOL_NAMES.has(tu.name) ? this.executeLocalTool(conv, tu.name, input) : await this.executeTool(conv, tu.name, input);
+            const r = LOCAL_TOOL_NAMES.has(tu.name) ? await this.executeLocalTool(conv, tu.name, input) : await this.executeTool(conv, tu.name, input);
             return { type: "tool_result", tool_use_id: tu.id, content: r.text, ...(r.isError ? { is_error: true } : {}) };
           }),
         );
@@ -319,6 +353,11 @@ export class VoiceAgent {
       this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: fullName, server: "?", durationMs: 0, ok: false });
       return { text: `Unknown tool "${fullName}". Search for the correct tool name first.`, isError: true };
     }
+    if (conv.mode === "proactive" && tool.kind === "write") {
+      this.log.info({ callId: conv.callId, tool: fullName }, "write tool refused in proactive run");
+      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: fullName, server: tool.server, durationMs: 0, ok: true, blocked: true });
+      return { text: "Write tools are not available in proactive runs (nobody is on the line to confirm). Suggest this action to the owner in your notify_owner message instead.", isError: true };
+    }
     const decision = conv.gate.check(
       { name: tool.name, annotations: tool.annotations, inputSchema: tool.inputSchema as { properties?: Record<string, unknown> } },
       fullName,
@@ -337,17 +376,33 @@ export class VoiceAgent {
     return outcome;
   }
 
-  /** Rule tools: writes go through the same spoken-confirmation gate as MCP write tools. */
-  private executeLocalTool(conv: ConversationState, name: string, input: Record<string, unknown>): { text: string; isError: boolean } {
+  /** Rule / routine tools: writes go through the same spoken-confirmation gate as MCP write tools. */
+  private async executeLocalTool(conv: ConversationState, name: string, input: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
     const isWrite = LOCAL_WRITE_TOOLS.has(name);
-    const decision = conv.gate.check({ name, annotations: { readOnlyHint: !isWrite, destructiveHint: isWrite } }, name, input, conv.turn, false);
+    if (conv.mode === "proactive" && isWrite) {
+      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: name, server: "local", durationMs: 0, ok: true, blocked: true });
+      return { text: "This tool is not available in proactive runs. Suggest the change to the owner instead.", isError: true };
+    }
+    // notify_owner is the one "write" a proactive run may do; it is never gated (no caller to confirm).
+    const decision = name === "notify_owner" ? { allowed: true as const } : conv.gate.check({ name, annotations: { readOnlyHint: !isWrite, destructiveHint: isWrite } }, name, input, conv.turn, false);
     if (!decision.allowed) {
       this.log.info({ callId: conv.callId, tool: name, reason: decision.reason }, "local tool call gated");
       this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: name, server: "local", durationMs: 0, ok: true, blocked: true });
       return { text: decision.message ?? "Not allowed.", isError: decision.reason !== "confirmation_required" };
     }
     const started = Date.now();
-    const r = runLocalTool(name, input, this.o.rules, `phone:${conv.phone}`);
+    const s = this.o.settings.get();
+    const r = await runLocalTool(name, input, {
+      rules: this.o.rules,
+      routines: this.o.routines,
+      notifier: this.o.notifier,
+      mode: conv.mode,
+      source: conv.mode === "proactive" ? conv.phone : conv.channel === "chat" ? `chat:${conv.phone}` : `phone:${conv.phone}`,
+      callId: conv.callId,
+      routineChannel: conv.routineChannel,
+      defaultChannel: s.notifyChannel,
+      notifications: conv.notifications,
+    });
     this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: name, server: "local", durationMs: Date.now() - started, ok: !r.isError });
     this.log.info({ callId: conv.callId, tool: name, error: r.isError }, "local tool call");
     return r;

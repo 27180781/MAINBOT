@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Logger } from "../logger.js";
 import type { VoiceAgent, ConversationState } from "../agent/agent.js";
+import type { RoutineRunner } from "../routines/runner.js";
 
 /**
  * Text-chat API for other systems (the CRM's built-in assistant, internal tools):
@@ -13,9 +14,12 @@ import type { VoiceAgent, ConversationState } from "../agent/agent.js";
  *   -> { sessionId, text, toolCalls, iterations, durationMs, error? }
  *   DELETE /api/v1/chat/:sessionId
  *   GET /api/v1/health
+ *   POST /api/v1/events { type, payload? }  -> runs the proactive routines subscribed to that event type
  */
 export interface ChatApiDeps {
   agent: VoiceAgent;
+  /** Optional: enables POST /api/v1/events (event-driven routines). */
+  runner?: RoutineRunner;
   logger: Logger;
   apiKey: string;
   /** Allowed browser origins for CORS; empty = no CORS headers (backend-to-backend only). */
@@ -39,6 +43,8 @@ export interface ChatRequestBody {
 }
 
 const SESSION_ID_RE = /^[A-Za-z0-9_.:@-]{1,128}$/;
+const EVENT_TYPE_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+const MAX_EVENT_PAYLOAD_CHARS = 20_000;
 
 export class ChatSessionStore {
   private readonly sessions = new Map<string, ChatSession>();
@@ -118,6 +124,33 @@ export function registerChatApi(app: FastifyInstance, d: ChatApiDeps): ChatSessi
 
   app.options("/api/v1/chat", { preHandler: cors }, async (_req, reply) => reply.code(204).send());
   app.options("/api/v1/chat/:sessionId", { preHandler: cors }, async (_req, reply) => reply.code(204).send());
+  app.options("/api/v1/events", { preHandler: cors }, async (_req, reply) => reply.code(204).send());
+
+  /**
+   * Event webhook: the CRM (or any system) posts { type, payload } and every enabled routine
+   * with schedule.kind = "event" that lists this type (or "*") runs in the background.
+   */
+  app.post("/api/v1/events", { preHandler: requireKey }, async (request, reply) => {
+    if (!d.runner) return reply.code(503).send({ error: "routines are not enabled on this server" });
+    const body = (request.body ?? {}) as { type?: unknown; payload?: unknown };
+    const type = typeof body.type === "string" ? body.type.trim() : "";
+    if (!EVENT_TYPE_RE.test(type)) return reply.code(400).send({ error: "type is required: letters, digits, _ . : - (max 64 chars)" });
+    let payload = body.payload;
+    if (payload !== undefined) {
+      let size = 0;
+      try {
+        size = JSON.stringify(payload).length;
+      } catch {
+        return reply.code(400).send({ error: "payload must be JSON-serialisable" });
+      }
+      if (size > MAX_EVENT_PAYLOAD_CHARS) return reply.code(413).send({ error: `payload too large (max ${MAX_EVENT_PAYLOAD_CHARS} chars)` });
+    } else {
+      payload = undefined;
+    }
+    const routines = d.runner.dispatchEvent(type, payload);
+    d.logger.info({ type, routines }, "event received");
+    return reply.code(202).send({ ok: true, type, routines });
+  });
 
   app.get("/api/v1/health", { preHandler: cors }, async () => ({ ok: true, enabled, sessions: sessions.size() }));
 

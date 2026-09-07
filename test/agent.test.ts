@@ -6,6 +6,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { VoiceAgent } from "../src/agent/agent.js";
 import { RulesStore } from "../src/agent/rules.js";
 import { LOCAL_TOOLS } from "../src/agent/local-tools.js";
+import { RoutineStore } from "../src/routines/store.js";
+import { Notifier } from "../src/routines/notify.js";
 import type { CatalogTool, McpHub, McpServerStatus } from "../src/mcp/hub.js";
 import { SettingsStore } from "../src/config.js";
 import { UsageStore } from "../src/usage/usage-store.js";
@@ -148,13 +150,15 @@ describe("VoiceAgent", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  function makeAgent(over: Partial<{ agentTimeoutMs: number; toolTimeoutMs: number; instructionsPath: string }> = {}) {
+  function makeAgent(over: Partial<{ agentTimeoutMs: number; toolTimeoutMs: number; instructionsPath: string; routines: RoutineStore; notifier: Notifier }> = {}) {
     return new VoiceAgent({
       client,
       hub: hubParts.hub,
       settings,
       usage,
       rules,
+      routines: over.routines,
+      notifier: over.notifier,
       logger: logs.logger,
       instructionsPath: over.instructionsPath ?? path.join(dir, "instructions.md"),
       timeZone: "Asia/Jerusalem",
@@ -603,7 +607,7 @@ describe("VoiceAgent", () => {
     create.mockResolvedValueOnce(apiReply([toolUse("tu_rm", "remove_rule", { id: 99 })], "tool_use")).mockResolvedValueOnce(apiReply([text("אין כלל כזה.")]));
     const conv = agent.newConversation("c", "p");
     await agent.respond(conv, "תמחק כלל 99", { phone: "p" });
-    expect((conv.messages[2] as MessageParam).content).toEqual([expect.objectContaining({ tool_use_id: "tu_rm", is_error: true, content: expect.stringContaining("Rule error") })]);
+    expect((conv.messages[2] as MessageParam).content).toEqual([expect.objectContaining({ tool_use_id: "tu_rm", is_error: true, content: expect.stringContaining("Rule 99 does not exist") })]);
     expect(usage.callEvents("c").filter((e) => e.kind === "tool")).toEqual([expect.objectContaining({ tool: "remove_rule", server: "local", ok: false })]);
   });
 
@@ -614,5 +618,105 @@ describe("VoiceAgent", () => {
     const reply = await agent.respond(agent.newConversation("c", "p"), "שלח", { phone: "p" });
     expect(reply.text).toBe("נשלח");
     expect(hubParts.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  describe("proactive runs (routines)", () => {
+    const toolNames = (conv: { tools: unknown[] }) => conv.tools.map((t) => (t as { name?: string }).name ?? "");
+
+    it("offers only read tools plus notify_owner, with the proactive prompt", () => {
+      const agent = makeAgent({ routines: new RoutineStore(dir), notifier: new Notifier(hubParts.hub, settings, usage, logs.logger) });
+      const conv = agent.newConversation("run-1", "routine:rt_1", { channel: "proactive", routine: { id: "rt_1", channel: "log" } });
+      expect(conv).toMatchObject({ mode: "proactive", channel: "proactive", routineId: "rt_1", routineChannel: "log", notifications: [] });
+      const names = toolNames(conv);
+      expect(names).toEqual(expect.arrayContaining(["tool_search_tool_regex", "list_rules", "list_routines", "notify_owner", "crm__search_contacts", "crm__list_statuses"]));
+      for (const n of ["end_call", "add_rule", "update_rule", "remove_rule", "add_routine", "remove_routine", "toggle_routine", "crm__send_whatsapp", "crm__delete_contact"]) expect(names).not.toContain(n);
+      expect(conv.systemPrompt).toContain("מצב הרצה יזומה");
+      expect(conv.systemPrompt).toContain("notify_owner");
+      expect(conv.systemPrompt).not.toContain("end_call");
+      expect(agent.getSystemPrompt("proactive")).toBe(conv.systemPrompt);
+      // interactive conversations are untouched
+      const voice = agent.newConversation("c", "p");
+      expect(voice.mode).toBe("interactive");
+      expect(toolNames(voice)).toEqual(expect.arrayContaining(["end_call", "add_rule", "add_routine", "crm__send_whatsapp"]));
+      expect(toolNames(voice)).not.toContain("notify_owner");
+    });
+
+    it("delivers notify_owner once per run and refuses write tools", async () => {
+      const notifier = new Notifier(hubParts.hub, settings, usage, logs.logger);
+      const agent = makeAgent({ routines: new RoutineStore(dir), notifier });
+      create
+        .mockResolvedValueOnce(apiReply([toolUse("tu_read", "crm__search_contacts", { q: "לידים" }), toolUse("tu_wa", "crm__send_whatsapp", { to: "1", text: "x" }), toolUse("tu_rule", "add_rule", { text: "כלל" })], "tool_use"))
+        .mockResolvedValueOnce(apiReply([toolUse("tu_n1", "notify_owner", { text: "יש 2 לידים חדשים: דני ורונית." }), toolUse("tu_n2", "notify_owner", { text: "שוב" })], "tool_use"))
+        .mockResolvedValueOnce(apiReply([text("בדקתי לידים ושלחתי הודעה.")]));
+      const conv = agent.newConversation("run-2", "routine:rt_2", { channel: "proactive", routine: { id: "rt_2", channel: "log" } });
+      const reply = await agent.respond(conv, "[משימה יזומה] בדוק לידים", { phone: "routine:rt_2", channel: "הרצה יזומה" });
+      expect(reply.text).toBe("בדקתי לידים ושלחתי הודעה.");
+      expect(reply.toolCalls).toEqual(["crm__search_contacts", "crm__send_whatsapp", "add_rule", "notify_owner", "notify_owner"]);
+      expect(hubParts.callTool).toHaveBeenCalledTimes(1); // only the read tool reached the hub
+      const results1 = (conv.messages[2] as MessageParam).content as Block[];
+      expect(results1).toEqual([
+        expect.objectContaining({ tool_use_id: "tu_read", content: "tool says hi" }),
+        expect.objectContaining({ tool_use_id: "tu_wa", is_error: true, content: expect.stringContaining("Write tools are not available in proactive runs") }),
+        expect.objectContaining({ tool_use_id: "tu_rule", is_error: true, content: expect.stringContaining("not available in proactive runs") }),
+      ]);
+      const results2 = (conv.messages[4] as MessageParam).content as Block[];
+      expect(results2).toEqual([
+        expect.objectContaining({ tool_use_id: "tu_n1", content: "ההודעה נשלחה (log)." }),
+        expect.objectContaining({ tool_use_id: "tu_n2", is_error: true, content: expect.stringContaining("already notified") }),
+      ]);
+      expect(conv.notifications).toEqual([{ channel: "log", ok: true, detail: "נרשם ביומן (ערוץ log)" }]);
+      expect(usage.notifications(5)).toEqual([expect.objectContaining({ callId: "run-2", phone: "routine:rt_2", channel: "log", ok: true, text: "יש 2 לידים חדשים: דני ורונית." })]);
+      expect(usage.callEvents("run-2").filter((e) => e.kind === "tool" && e.blocked)).toHaveLength(2);
+      assertTranscriptConsistent(conv.messages as MessageParam[]);
+    });
+
+    it("rejects notify_owner outside proactive runs", async () => {
+      const agent = makeAgent({ notifier: new Notifier(hubParts.hub, settings, usage, logs.logger) });
+      create.mockResolvedValueOnce(apiReply([toolUse("tu_n", "notify_owner", { text: "x" })], "tool_use")).mockResolvedValueOnce(apiReply([text("אוקיי")]));
+      const conv = agent.newConversation("c", "0501234567");
+      await agent.respond(conv, "תשלח לי הודעה", { phone: "0501234567" });
+      expect((conv.messages[2] as MessageParam).content).toEqual([expect.objectContaining({ is_error: true, content: expect.stringContaining("only available in proactive runs") })]);
+      expect(conv.notifications).toEqual([]);
+    });
+
+    it("lets the caller create a routine by voice after a spoken confirmation", async () => {
+      const routines = new RoutineStore(dir);
+      settings.update({ notifyChannel: "whatsapp" });
+      const agent = makeAgent({ routines });
+      const args = { name: "תדריך בוקר", schedule_kind: "cron", cron_expression: "0 8 * * 0-4", prompt: "סכם לי את היום: פגישות, לידים חדשים ופניות שלא נענו." };
+      create
+        .mockResolvedValueOnce(apiReply([toolUse("tu_a1", "add_routine", args)], "tool_use"))
+        .mockResolvedValueOnce(apiReply([text("אני אצור משימה בשם תדריך בוקר, כל יום ראשון עד חמישי בשמונה בבוקר, בוואטסאפ. לאשר?")]))
+        .mockResolvedValueOnce(apiReply([toolUse("tu_a2", "add_routine", args)], "tool_use"))
+        .mockResolvedValueOnce(apiReply([text("נוצר. מה עוד?")]))
+        .mockResolvedValueOnce(apiReply([toolUse("tu_l", "list_routines", {})], "tool_use"))
+        .mockResolvedValueOnce(apiReply([text("יש משימה אחת: תדריך בוקר.")]));
+      const conv = agent.newConversation("c", "0501234567");
+      const ask = await agent.respond(conv, "כל בוקר תשלח לי סיכום של היום", { phone: "0501234567" });
+      expect(ask.text).toContain("לאשר?");
+      expect(routines.list()).toEqual([]);
+      expect(String(((conv.messages[2] as MessageParam).content as Block[])[0]!.content)).toContain("CONFIRMATION REQUIRED");
+
+      const done = await agent.respond(conv, "כן", { phone: "0501234567" });
+      expect(done.text).toBe("נוצר. מה עוד?");
+      expect(routines.list()).toEqual([expect.objectContaining({ name: "תדריך בוקר", channel: "whatsapp", source: "phone:0501234567", schedule: { kind: "cron", expression: "0 8 * * 0-4" }, enabled: true })]);
+      const created = ((conv.messages[6] as MessageParam).content as Block[])[0]!;
+      expect(String(created.content)).toContain(`נוצרה משימה ${routines.list()[0]!.id}`);
+
+      await agent.respond(conv, "אילו משימות יש?", { phone: "0501234567" });
+      const listed = ((conv.messages[10] as MessageParam).content as Block[])[0]!;
+      expect(String(listed.content)).toContain("תדריך בוקר");
+      expect(usage.callEvents("c").filter((e) => e.kind === "tool").map((e) => [e.tool, e.blocked ?? false])).toEqual([["add_routine", true], ["add_routine", false], ["list_routines", false]]);
+      assertTranscriptConsistent(conv.messages as MessageParam[]);
+    });
+
+    it("reports routine tools as unavailable when no store is configured", async () => {
+      settings.update({ confirmWrites: false });
+      const agent = makeAgent();
+      create.mockResolvedValueOnce(apiReply([toolUse("tu_l", "list_routines", {})], "tool_use")).mockResolvedValueOnce(apiReply([text("אין")]));
+      const conv = agent.newConversation("c", "p");
+      await agent.respond(conv, "משימות?", { phone: "p" });
+      expect((conv.messages[2] as MessageParam).content).toEqual([expect.objectContaining({ is_error: true, content: "Routines are not enabled on this server." })]);
+    });
   });
 });

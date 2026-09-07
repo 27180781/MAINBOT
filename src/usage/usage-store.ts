@@ -49,7 +49,33 @@ export interface CallEvent {
   endedBy: string;
 }
 
-export type UsageEvent = LlmUsageEvent | ToolUsageEvent | TurnEvent | CallEvent;
+export interface NotificationEvent {
+  kind: "notification";
+  ts: string;
+  callId: string;
+  phone: string;
+  channel: string;
+  ok: boolean;
+  detail: string;
+  text: string;
+}
+
+export interface RoutineRunEvent {
+  kind: "routine";
+  ts: string;
+  callId: string;
+  phone: string;
+  routineId: string;
+  name: string;
+  trigger: string;
+  ok: boolean;
+  notified: boolean;
+  durationMs: number;
+  text: string;
+  error?: string;
+}
+
+export type UsageEvent = LlmUsageEvent | ToolUsageEvent | TurnEvent | CallEvent | NotificationEvent | RoutineRunEvent;
 
 export interface CallSummary {
   callId: string;
@@ -135,6 +161,33 @@ export class UsageStore {
 
   recordCall(e: Omit<CallEvent, "kind" | "ts">): void {
     this.record({ ...e, kind: "call", ts: new Date().toISOString() });
+  }
+
+  recordNotification(e: Omit<NotificationEvent, "kind" | "ts">): void {
+    this.record({ ...e, kind: "notification", ts: new Date().toISOString() });
+  }
+
+  recordRoutineRun(e: Omit<RoutineRunEvent, "kind" | "ts">): void {
+    this.record({ ...e, kind: "routine", ts: new Date().toISOString() });
+  }
+
+  /** Newest first. */
+  routineRuns(routineId?: string, limit = 50): RoutineRunEvent[] {
+    const out: RoutineRunEvent[] = [];
+    for (let i = this.events.length - 1; i >= 0 && out.length < limit; i--) {
+      const e = this.events[i]!;
+      if (e.kind === "routine" && (!routineId || e.routineId === routineId)) out.push(e);
+    }
+    return out;
+  }
+
+  notifications(limit = 50): NotificationEvent[] {
+    const out: NotificationEvent[] = [];
+    for (let i = this.events.length - 1; i >= 0 && out.length < limit; i--) {
+      const e = this.events[i]!;
+      if (e.kind === "notification") out.push(e);
+    }
+    return out;
   }
 
   all(): readonly UsageEvent[] {

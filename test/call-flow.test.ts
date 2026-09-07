@@ -30,6 +30,11 @@ function fakeAgent() {
       turn: 0,
       gate: new ConfirmationGate({ confirmWrites: true, blockedTools: [] }),
       contextSent: false,
+      systemPrompt: "",
+      tools: [],
+      channel: "voice",
+      mode: "interactive",
+      notifications: [],
     }),
   );
   return { agent: { respond, newConversation } as unknown as VoiceAgent, respond, newConversation };

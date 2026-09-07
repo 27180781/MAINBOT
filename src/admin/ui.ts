@@ -173,6 +173,7 @@ const BODY = String.raw`
     <button type="button" role="tab" data-tab="usage" aria-selected="false">שימוש וטוקנים</button>
     <button type="button" role="tab" data-tab="chat" aria-selected="false">בדיקה</button>
     <button type="button" role="tab" data-tab="rules" aria-selected="false">כללים והוראות</button>
+    <button type="button" role="tab" data-tab="routines" aria-selected="false">משימות יזומות</button>
     <button type="button" role="tab" data-tab="prompt" aria-selected="false">פרומפט</button>
   </nav>
 </header>
@@ -296,6 +297,37 @@ const BODY = String.raw`
   </div>
 
   <div class="card">
+    <h2>התראות לבעל העסק ומשימות יזומות</h2>
+    <div class="grid">
+      <div class="field wide">
+        <div class="check"><input type="checkbox" id="f-routinesEnabled"><label for="f-routinesEnabled">להריץ משימות יזומות לפי לוח הזמנים (כיבוי עוצר את כולן, בלי למחוק)</label></div>
+      </div>
+      <div class="field">
+        <label for="f-ownerPhone">הטלפון של בעל העסק (לוואטסאפ / SMS)</label>
+        <input type="tel" id="f-ownerPhone" dir="ltr" placeholder="0501234567">
+      </div>
+      <div class="field">
+        <label for="f-ownerEmail">האימייל של בעל העסק</label>
+        <input type="email" id="f-ownerEmail" dir="ltr" placeholder="owner@example.com">
+      </div>
+      <div class="field">
+        <label for="f-notifyChannel">ערוץ ברירת מחדל להתראות</label>
+        <select id="f-notifyChannel">
+          <option value="log">log – רק ביומן (בלי שליחה)</option>
+          <option value="whatsapp">whatsapp – וואטסאפ דרך ה-CRM</option>
+          <option value="sms">sms – SMS דרך ימות המשיח</option>
+          <option value="email">email – אימייל דרך ה-CRM</option>
+        </select>
+        <div class="row"><span class="hint">שמרו קודם, ואז:</span><button type="button" class="btn small" id="btn-notify-test">שלח הודעת בדיקה</button></div>
+      </div>
+      <div class="field">
+        <label for="f-quietFrom">שעות שקט (משימות מתוזמנות לא רצות)</label>
+        <div class="row"><input type="time" id="f-quietFrom" style="flex:1"><span>עד</span><input type="time" id="f-quietTo" style="flex:1"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>הנחיות נוספות</h2>
     <div class="grid">
       <div class="field wide">
@@ -383,6 +415,94 @@ const BODY = String.raw`
       <textarea id="instr-text" rows="16"></textarea>
     </div>
     <div class="row" style="margin-top:12px"><button type="button" class="btn primary" id="btn-instr-save">שמור הוראות</button><button type="button" class="btn" id="btn-instr-reload">טען מחדש</button></div>
+  </div>
+</section>
+
+<section data-panel="routines" role="tabpanel" hidden>
+  <div class="card">
+    <div class="row">
+      <h2 style="margin:0;flex:1">משימות יזומות</h2>
+      <span class="chip" id="routines-status">–</span>
+      <button type="button" class="btn small" id="btn-routines-reload">רענון</button>
+    </div>
+    <p class="hint" style="margin:8px 0 12px">העוזר מריץ בעצמו בדיקות לפי לוח זמנים או כשמגיע אירוע מהמערכת, קורא מהמערכות (בלי לבצע פעולות) ושולח לכם הודעה רק כשיש משהו שדורש תשומת לב – עם הצעות לפעולה שתאשרו בשיחה או בצ'אט. אפשר גם ליצור משימה בטלפון: "כל בוקר תשלח לי...".</p>
+    <div id="routines-list"><div class="empty">טוען...</div></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><h2 style="margin:0;flex:1" id="routine-form-title">משימה חדשה</h2>
+      <label for="rt-example" class="sr-only">דוגמאות</label>
+      <select id="rt-example"><option value="">דוגמאות מוכנות...</option></select>
+    </div>
+    <form id="routine-form" style="margin-top:12px">
+      <input type="hidden" id="rt-id" value="">
+      <div class="grid">
+        <div class="field">
+          <label for="rt-name">שם המשימה</label>
+          <input type="text" id="rt-name" maxlength="80" required placeholder="לדוגמה: תדריך בוקר">
+        </div>
+        <div class="field">
+          <label for="rt-channel">לאן לשלוח את ההודעה</label>
+          <select id="rt-channel">
+            <option value="log">log – רק ביומן</option>
+            <option value="whatsapp">whatsapp – וואטסאפ</option>
+            <option value="sms">sms – SMS</option>
+            <option value="email">email – אימייל</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="rt-kind">מתי לרוץ</label>
+          <select id="rt-kind">
+            <option value="cron">לפי לוח זמנים</option>
+            <option value="interval">כל כמה דקות</option>
+            <option value="event">כשמגיע אירוע מהמערכת (webhook)</option>
+            <option value="manual">ידני בלבד</option>
+          </select>
+        </div>
+        <div class="field" data-kind="cron">
+          <label for="rt-preset">לוח זמנים</label>
+          <select id="rt-preset">
+            <option value="0 8 * * *">כל יום ב-08:00</option>
+            <option value="0 9 * * 0-4">ימים א'–ה' ב-09:00</option>
+            <option value="0 20 * * 0-4">ימים א'–ה' ב-20:00</option>
+            <option value="0 9-18 * * 0-4">כל שעה עגולה בין 9 ל-18, א'–ה'</option>
+            <option value="0 12 * * 5">כל יום שישי ב-12:00</option>
+            <option value="0 9 1 * *">ב-1 לכל חודש ב-09:00</option>
+            <option value="custom">מותאם אישית...</option>
+          </select>
+        </div>
+        <div class="field" data-kind="cron">
+          <label for="rt-cron">ביטוי cron (דקה שעה יום חודש יום-בשבוע; 0 = ראשון; שעון ישראל)</label>
+          <input type="text" id="rt-cron" dir="ltr" value="0 8 * * *" placeholder="0 8 * * *">
+        </div>
+        <div class="field" data-kind="interval" hidden>
+          <label for="rt-every">כל כמה דקות (5–10080)</label>
+          <input type="number" id="rt-every" min="5" max="10080" step="1" value="60">
+        </div>
+        <div class="field wide" data-kind="event" hidden>
+          <label for="rt-events">סוגי אירועים (מופרדים בפסיק; * = כל אירוע)</label>
+          <input type="text" id="rt-events" dir="ltr" placeholder="new_lead, payment_received">
+          <span class="hint">המערכת החיצונית שולחת POST /api/v1/events עם {"type": "new_lead", "payload": {...}} ועם מפתח ה-Chat API.</span>
+        </div>
+        <div class="field wide">
+          <label for="rt-prompt">ההנחיה: מה לבדוק, מתי שווה להודיע, מה להציע</label>
+          <textarea id="rt-prompt" rows="5" maxlength="4000" placeholder="לדוגמה: בדוק ב-CRM את הלידים שלא קיבלו מענה מעל 24 שעות. אם יש כאלה, שלח לי רשימה קצרה (שם, טלפון, מה ביקשו) והצע למי כדאי לחזור קודם."></textarea>
+        </div>
+        <div class="field wide">
+          <div class="check"><input type="checkbox" id="rt-quiet"><label for="rt-quiet">שעות שקט מיוחדות למשימה זו (אחרת לפי ההגדרות הכלליות)</label></div>
+          <div class="row" id="rt-quiet-row" hidden><input type="time" id="rt-quiet-from" value="22:00"><span>עד</span><input type="time" id="rt-quiet-to" value="07:00"></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button type="submit" class="btn primary" id="btn-rt-save">שמור משימה</button>
+        <button type="button" class="btn" id="btn-rt-cancel" hidden>ביטול עריכה</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>הודעות אחרונות לבעל העסק</h2>
+    <div class="table-wrap" id="notifications"><div class="empty">טוען...</div></div>
   </div>
 </section>
 
@@ -476,6 +596,7 @@ const SCRIPT = String.raw`
     if (name === 'usage' && !usageLoaded) loadUsage();
     if (name === 'prompt' && !promptLoaded) loadPrompt();
     if (name === 'rules' && !rulesLoaded) { loadRules(); loadInstructions(); }
+    if (name === 'routines' && !routinesLoaded) loadRoutines();
   }
 
   /* ------------------------------ state ------------------------------ */
@@ -548,6 +669,12 @@ const SCRIPT = String.raw`
     $('#f-blockedTools').value = (s.blockedTools || []).join('\n');
     $('#f-confirmWrites').checked = !!s.confirmWrites;
     $('#f-extraInstructions').value = s.extraInstructions || '';
+    $('#f-routinesEnabled').checked = s.routinesEnabled !== false;
+    $('#f-ownerPhone').value = s.ownerPhone || '';
+    $('#f-ownerEmail').value = s.ownerEmail || '';
+    $('#f-notifyChannel').value = s.notifyChannel || 'log';
+    $('#f-quietFrom').value = hhmm((s.quietHours || {}).from || '22:00');
+    $('#f-quietTo').value = hhmm((s.quietHours || {}).to || '07:00');
     $('#f-pin').value = '';
     $('#pin-status').textContent = s.hasPin ? 'מוגדר קוד גישה.' : 'לא מוגדר קוד גישה.';
     $('#btn-clear-pin').disabled = !s.hasPin;
@@ -585,7 +712,37 @@ const SCRIPT = String.raw`
     });
     out.confirmWrites = $('#f-confirmWrites').checked;
     out.extraInstructions = $('#f-extraInstructions').value;
+    out.routinesEnabled = $('#f-routinesEnabled').checked;
+    out.ownerPhone = $('#f-ownerPhone').value.trim();
+    out.ownerEmail = $('#f-ownerEmail').value.trim();
+    out.notifyChannel = $('#f-notifyChannel').value;
+    var qf = $('#f-quietFrom').value, qt = $('#f-quietTo').value;
+    if (!/^\d{1,2}:\d{2}$/.test(qf) || !/^\d{1,2}:\d{2}$/.test(qt)) throw new Error('שעות שקט: יש להזין שעה בפורמט HH:MM');
+    out.quietHours = { from: qf, to: qt };
     return out;
+  }
+
+  /** <input type=time> wants HH:MM with two-digit hours. */
+  function hhmm(v) {
+    var m = /^(\d{1,2}):(\d{2})$/.exec(String(v || ''));
+    if (!m) return '';
+    return (m[1].length === 1 ? '0' + m[1] : m[1]) + ':' + m[2];
+  }
+
+  async function notifyTest() {
+    var btn = $('#btn-notify-test');
+    var channel = $('#f-notifyChannel').value;
+    if (state && state.settings && state.settings.notifyChannel !== channel) { toast('שמרו את ההגדרות קודם – הבדיקה משתמשת בערוץ השמור', 'err'); return; }
+    btn.disabled = true;
+    try {
+      var r = await api('POST', '/admin/api/notify/test', { channel: channel });
+      if (r && r.ok) toast('נשלח בערוץ ' + r.channel + (r.detail ? ' – ' + r.detail : ''), 'ok');
+      else toast('השליחה נכשלה (' + ((r && r.channel) || channel) + '): ' + ((r && r.detail) || ''), 'err');
+    } catch (e) {
+      toast('השליחה נכשלה: ' + e.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   async function saveSettings() {
@@ -1033,6 +1190,251 @@ const SCRIPT = String.raw`
     }
   }
 
+  /* ------------------------------ proactive routines ------------------------------ */
+
+  var routinesLoaded = false;
+  var routinesCache = [];
+  var CHANNEL_LABEL = { log: 'יומן בלבד', whatsapp: 'וואטסאפ', sms: 'SMS', email: 'אימייל' };
+  var ROUTINE_EXAMPLES = [
+    { name: 'תדריך בוקר', kind: 'cron', cron: '0 8 * * 0-4', prompt: 'הכן תדריך בוקר קצר: הפגישות והאירועים של היום ביומן, לידים חדשים מאתמול, פניות שלא נענו, ותשלומים שהיו אמורים להתקבל ולא התקבלו. שלח את התדריך תמיד (גם אם יום רגוע - כתוב זאת במשפט), עם עד חמש נקודות והצעה מה לעשות קודם.' },
+    { name: 'לידים ללא מענה', kind: 'cron', cron: '0 9-18 * * 0-4', prompt: 'בדוק ב-CRM אילו פניות נכנסות (לידים) לא קיבלו מענה מעל 3 שעות. אם יש כאלה, שלח לי רשימה קצרה: שם, טלפון, מה ביקשו וכמה זמן ממתינים, והצע למי לחזור קודם. אם אין - אל תשלח כלום.' },
+    { name: 'חובות פתוחים', kind: 'cron', cron: '0 10 * * 1', prompt: 'בדוק אילו לקוחות חייבים כסף (חשבוניות או תשלומים שעבר תאריך היעד שלהם) ב-CRM ובסאמיט. שלח לי סיכום עם שם, סכום, כמה ימים באיחור, והצע לאילו לקוחות כדאי לשלוח תזכורת תשלום. אם אין חובות - אל תשלח.' },
+    { name: 'סיכום שבועי', kind: 'cron', cron: '0 12 * * 5', prompt: 'הכן סיכום שבועי: כמה לידים חדשים נכנסו השבוע, כמה הפכו ללקוחות, הכנסות שנרשמו, פגישות שהתקיימו, ומה נשאר פתוח לשבוע הבא. שלח תמיד, בעד שש שורות.' },
+    { name: 'ליד חדש - בדיקה מיידית', kind: 'event', events: 'new_lead', prompt: 'התקבל ליד חדש (הפרטים בנתוני האירוע). בדוק ב-CRM אם זה לקוח קיים או כפילות, מה מקור הפנייה ומה ביקש, ושלח לי הודעה קצרה עם הפרטים והצעה איך ומתי לחזור אליו.' },
+    { name: 'תור ימות המשיח', kind: 'interval', every: 30, prompt: 'בדוק בימות המשיח אם יש הודעות קוליות חדשות או שיחות שלא נענו בשעה האחרונה. אם יש, שלח לי מי התקשר ומתי והצע למי לחזור. אם אין - אל תשלח.' }
+  ];
+
+  function describeSchedule(sch) {
+    if (!sch) return '–';
+    if (sch.kind === 'cron') return 'לפי לוח זמנים · ' + sch.expression;
+    if (sch.kind === 'interval') return 'כל ' + fmt(sch.everyMinutes) + ' דקות';
+    if (sch.kind === 'event') return 'באירוע: ' + (sch.eventTypes || []).join(', ');
+    return 'ידני בלבד';
+  }
+
+  function renderRoutines(list) {
+    routinesCache = list || [];
+    var box = $('#routines-list');
+    var enabledCount = routinesCache.filter(function (r) { return r.enabled; }).length;
+    $('#routines-status').textContent = routinesCache.length ? (fmt(enabledCount) + ' פעילות מתוך ' + fmt(routinesCache.length)) : 'אין משימות';
+    if (!routinesCache.length) { box.innerHTML = '<div class="empty">עדיין אין משימות יזומות. צרו אחת בטופס למטה או בחרו דוגמה מוכנה.</div>'; return; }
+    box.innerHTML = routinesCache.map(function (r) {
+      var last = r.lastResult;
+      var lastHtml = last
+        ? '<div class="meta">הרצה אחרונה ' + esc(when(last.at)) + ' (' + esc(last.trigger) + ', ' + fmt(Math.round((last.durationMs || 0) / 1000)) + ' שנ\', ' + fmt((last.toolCalls || []).length) + ' כלים) · ' +
+          (last.ok ? '<span class="badge ok">הסתיימה</span>' : '<span class="badge err">שגיאה</span>') + ' ' +
+          (last.notified ? '<span class="badge info">נשלחה הודעה</span>' : '<span class="badge">ללא הודעה</span>') +
+          (last.error ? '<div class="meta" dir="auto">' + esc(last.error) + '</div>' : '') +
+          (last.text ? '<div class="meta" dir="auto" style="white-space:pre-wrap">' + esc(String(last.text).slice(0, 400)) + (String(last.text).length > 400 ? '…' : '') + '</div>' : '') + '</div>'
+        : '<div class="meta">עדיין לא רצה.</div>';
+      return '<div class="rule" data-routine="' + esc(r.id) + '">' +
+        '<div class="row"><b>' + esc(r.name) + '</b> ' +
+        (r.enabled ? '<span class="badge ok">פעילה</span>' : '<span class="badge warn">כבויה</span>') +
+        (r.running ? ' <span class="badge info">רצה עכשיו...</span>' : '') +
+        '<span style="flex:1"></span><span class="meta">' + esc(r.id) + ' · מקור: ' + esc(dash(r.source)) + '</span></div>' +
+        '<div class="meta">' + esc(describeSchedule(r.schedule)) + ' · הודעה: ' + esc(CHANNEL_LABEL[r.channel] || r.channel) +
+        (r.nextRunAt ? ' · הריצה הבאה: ' + esc(when(r.nextRunAt)) : '') +
+        (r.quietHours ? ' · שקט ' + esc(r.quietHours.from) + '–' + esc(r.quietHours.to) : '') + '</div>' +
+        '<div dir="auto" style="white-space:pre-wrap;font-size:14px">' + esc(r.prompt) + '</div>' +
+        lastHtml +
+        '<div class="row">' +
+        '<button type="button" class="btn small primary" data-act="run" data-id="' + esc(r.id) + '">הרץ עכשיו</button>' +
+        '<button type="button" class="btn small" data-act="edit" data-id="' + esc(r.id) + '">ערוך</button>' +
+        '<button type="button" class="btn small" data-act="toggle" data-id="' + esc(r.id) + '">' + (r.enabled ? 'כבה' : 'הפעל') + '</button>' +
+        '<button type="button" class="btn small" data-act="runs" data-id="' + esc(r.id) + '">יומן הרצות</button>' +
+        '<button type="button" class="btn small" data-act="delete" data-id="' + esc(r.id) + '">מחק</button>' +
+        '</div></div>';
+    }).join('');
+  }
+
+  function renderNotifications(list) {
+    var box = $('#notifications');
+    if (!list || !list.length) { box.innerHTML = '<div class="empty">עדיין לא נשלחו הודעות.</div>'; return; }
+    box.innerHTML = '<table><thead><tr><th>מתי</th><th>ערוץ</th><th>מצב</th><th>הודעה</th><th>פרטים</th></tr></thead><tbody>' + list.map(function (n) {
+      return '<tr><td>' + esc(when(n.ts)) + '</td><td>' + esc(CHANNEL_LABEL[n.channel] || n.channel) + '</td><td>' +
+        (n.ok ? '<span class="badge ok">נשלח</span>' : '<span class="badge err">נכשל</span>') + '</td><td dir="auto" style="white-space:pre-wrap;max-width:420px">' + esc(n.text) + '</td><td dir="auto" class="meta">' + esc(n.detail) + '</td></tr>';
+    }).join('') + '</tbody></table>';
+  }
+
+  async function loadRoutines() {
+    try {
+      var r = await api('GET', '/admin/api/routines');
+      renderRoutines((r && r.routines) || []);
+      renderNotifications((r && r.notifications) || []);
+      if (r && r.enabled === false) toast('שימו לב: המשימות היזומות כבויות בהגדרות (רק הרצה ידנית תעבוד)');
+      routinesLoaded = true;
+    } catch (e) {
+      toast('טעינת המשימות נכשלה: ' + e.message, 'err');
+    }
+  }
+
+  function routineKindChanged() {
+    var kind = $('#rt-kind').value;
+    $$('#routine-form [data-kind]').forEach(function (el) { el.hidden = el.getAttribute('data-kind') !== kind; });
+  }
+
+  function routinePresetChanged() {
+    var v = $('#rt-preset').value;
+    if (v !== 'custom') $('#rt-cron').value = v;
+  }
+
+  function syncPresetFromCron() {
+    var v = $('#rt-cron').value.trim();
+    var sel = $('#rt-preset');
+    var found = false;
+    $$('option', sel).forEach(function (o) { if (o.value === v) found = true; });
+    sel.value = found ? v : 'custom';
+  }
+
+  function fillRoutineForm(r) {
+    $('#rt-id').value = r ? r.id : '';
+    $('#routine-form-title').textContent = r ? 'עריכת משימה: ' + r.name : 'משימה חדשה';
+    $('#btn-rt-cancel').hidden = !r;
+    $('#btn-rt-save').textContent = r ? 'שמור שינויים' : 'שמור משימה';
+    $('#rt-name').value = r ? r.name : '';
+    $('#rt-channel').value = r ? r.channel : ((state && state.settings && state.settings.notifyChannel) || 'log');
+    var sch = r ? r.schedule : { kind: 'cron', expression: '0 8 * * *' };
+    $('#rt-kind').value = sch.kind;
+    $('#rt-cron').value = sch.kind === 'cron' ? sch.expression : '0 8 * * *';
+    $('#rt-every').value = sch.kind === 'interval' ? sch.everyMinutes : 60;
+    $('#rt-events').value = sch.kind === 'event' ? (sch.eventTypes || []).join(', ') : '';
+    $('#rt-prompt').value = r ? r.prompt : '';
+    $('#rt-quiet').checked = !!(r && r.quietHours);
+    $('#rt-quiet-row').hidden = !(r && r.quietHours);
+    $('#rt-quiet-from').value = hhmm(r && r.quietHours ? r.quietHours.from : '22:00');
+    $('#rt-quiet-to').value = hhmm(r && r.quietHours ? r.quietHours.to : '07:00');
+    syncPresetFromCron();
+    routineKindChanged();
+  }
+
+  function applyRoutineExample() {
+    var idx = Number($('#rt-example').value);
+    var ex = ROUTINE_EXAMPLES[idx];
+    $('#rt-example').value = '';
+    if (!ex) return;
+    fillRoutineForm(null);
+    $('#rt-name').value = ex.name;
+    $('#rt-kind').value = ex.kind;
+    if (ex.cron) $('#rt-cron').value = ex.cron;
+    if (ex.every) $('#rt-every').value = ex.every;
+    if (ex.events) $('#rt-events').value = ex.events;
+    $('#rt-prompt').value = ex.prompt;
+    syncPresetFromCron();
+    routineKindChanged();
+    $('#rt-name').focus();
+  }
+
+  function collectRoutine() {
+    var kind = $('#rt-kind').value;
+    var schedule;
+    if (kind === 'cron') {
+      var expr = $('#rt-cron').value.trim();
+      if (expr.split(/\s+/).length !== 5) throw new Error('ביטוי cron חייב להכיל 5 שדות');
+      schedule = { kind: 'cron', expression: expr };
+    } else if (kind === 'interval') {
+      var every = Number($('#rt-every').value);
+      if (!isFinite(every) || every < 5 || every > 10080) throw new Error('המרווח חייב להיות בין 5 ל-10080 דקות');
+      schedule = { kind: 'interval', everyMinutes: Math.floor(every) };
+    } else if (kind === 'event') {
+      var types = $('#rt-events').value.split(',').map(function (t) { return t.trim(); }).filter(Boolean);
+      if (!types.length) throw new Error('יש להזין לפחות סוג אירוע אחד');
+      schedule = { kind: 'event', eventTypes: types };
+    } else {
+      schedule = { kind: 'manual' };
+    }
+    var name = $('#rt-name').value.trim();
+    var prompt = $('#rt-prompt').value.trim();
+    if (!name) throw new Error('יש להזין שם למשימה');
+    if (prompt.length < 3) throw new Error('יש לכתוב הנחיה');
+    var quiet = null;
+    if ($('#rt-quiet').checked) {
+      var qf = $('#rt-quiet-from').value, qt = $('#rt-quiet-to').value;
+      if (!/^\d{1,2}:\d{2}$/.test(qf) || !/^\d{1,2}:\d{2}$/.test(qt)) throw new Error('שעות שקט: יש להזין שעה בפורמט HH:MM');
+      quiet = { from: qf, to: qt };
+    }
+    return { name: name, schedule: schedule, prompt: prompt, channel: $('#rt-channel').value, quietHours: quiet };
+  }
+
+  async function saveRoutine(e) {
+    e.preventDefault();
+    var input;
+    try { input = collectRoutine(); } catch (err) { toast(err.message, 'err'); return; }
+    var id = $('#rt-id').value;
+    var btn = $('#btn-rt-save');
+    btn.disabled = true;
+    try {
+      var r = id ? await api('PUT', '/admin/api/routines/' + encodeURIComponent(id), input) : await api('POST', '/admin/api/routines', input);
+      renderRoutines((r && r.routines) || []);
+      fillRoutineForm(null);
+      toast(id ? 'המשימה עודכנה' : 'המשימה נוצרה', 'ok');
+    } catch (err) {
+      toast('השמירה נכשלה: ' + err.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function routineAction(e) {
+    var btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    var id = btn.getAttribute('data-id');
+    var act = btn.getAttribute('data-act');
+    var routine = routinesCache.filter(function (r) { return r.id === id; })[0];
+    if (!routine) return;
+    if (act === 'edit') { fillRoutineForm(routine); $('#rt-name').scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+    if (act === 'runs') { openRoutineRuns(routine); return; }
+    if (act === 'delete' && !window.confirm('למחוק את המשימה "' + routine.name + '"?')) return;
+    btn.disabled = true;
+    try {
+      var r;
+      if (act === 'run') {
+        btn.textContent = 'רצה...';
+        toast('המשימה "' + routine.name + '" רצה עכשיו – זה יכול לקחת דקה או שתיים');
+        r = await api('POST', '/admin/api/routines/' + encodeURIComponent(id) + '/run', {});
+        var res = (r && r.result) || {};
+        if (res.ok) toast(res.notified ? 'הסתיימה ונשלחה הודעה לבעל העסק' : 'הסתיימה – לא היה מה לדווח', 'ok');
+        else toast('ההרצה נכשלה: ' + (res.error || ''), 'err');
+        loadRoutines();
+        return;
+      } else if (act === 'toggle') {
+        r = await api('PUT', '/admin/api/routines/' + encodeURIComponent(id), { enabled: !routine.enabled });
+        toast(routine.enabled ? 'המשימה כובתה' : 'המשימה הופעלה', 'ok');
+      } else if (act === 'delete') {
+        r = await api('DELETE', '/admin/api/routines/' + encodeURIComponent(id));
+        toast('המשימה נמחקה', 'ok');
+        if ($('#rt-id').value === id) fillRoutineForm(null);
+      } else {
+        return;
+      }
+      renderRoutines((r && r.routines) || []);
+    } catch (err) {
+      toast('הפעולה נכשלה: ' + err.message, 'err');
+      loadRoutines();
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function openRoutineRuns(routine) {
+    $('#modal-title').textContent = 'יומן הרצות: ' + routine.name;
+    $('#modal-body').innerHTML = '<div class="empty">טוען...</div>';
+    $('#call-modal').hidden = false;
+    try {
+      var r = await api('GET', '/admin/api/routines/' + encodeURIComponent(routine.id) + '/runs');
+      var runs = (r && r.runs) || [];
+      if (!runs.length) { $('#modal-body').innerHTML = '<div class="empty">עדיין אין הרצות.</div>'; return; }
+      $('#modal-body').innerHTML = runs.map(function (run) {
+        return '<div class="rule"><div class="row"><b>' + esc(when(run.ts)) + '</b> <span class="meta">' + esc(run.trigger) + ' · ' + fmt(Math.round((run.durationMs || 0) / 1000)) + ' שנ\'</span><span style="flex:1"></span>' +
+          (run.ok ? '<span class="badge ok">הסתיימה</span>' : '<span class="badge err">שגיאה</span>') + ' ' + (run.notified ? '<span class="badge info">נשלחה הודעה</span>' : '') + '</div>' +
+          (run.error ? '<div class="meta" dir="auto">' + esc(run.error) + '</div>' : '') +
+          '<div dir="auto" style="white-space:pre-wrap;font-size:14px">' + esc(run.text || '') + '</div>' +
+          '<div class="row"><button type="button" class="btn small" data-call-open="' + esc(run.callId) + '">התמליל המלא</button></div></div>';
+      }).join('');
+    } catch (e) {
+      $('#modal-body').innerHTML = '<div class="empty">טעינת היומן נכשלה: ' + esc(e.message) + '</div>';
+    }
+  }
+
   /* ------------------------------ prompt ------------------------------ */
 
   async function loadPrompt() {
@@ -1080,6 +1482,22 @@ const SCRIPT = String.raw`
     $('#rules-list').addEventListener('click', ruleAction);
     $('#btn-instr-save').addEventListener('click', saveInstructions);
     $('#btn-instr-reload').addEventListener('click', loadInstructions);
+    $('#btn-notify-test').addEventListener('click', notifyTest);
+    $('#btn-routines-reload').addEventListener('click', loadRoutines);
+    $('#routines-list').addEventListener('click', routineAction);
+    $('#routine-form').addEventListener('submit', saveRoutine);
+    $('#btn-rt-cancel').addEventListener('click', function () { fillRoutineForm(null); });
+    $('#rt-kind').addEventListener('change', routineKindChanged);
+    $('#rt-preset').addEventListener('change', routinePresetChanged);
+    $('#rt-cron').addEventListener('input', syncPresetFromCron);
+    $('#rt-quiet').addEventListener('change', function () { $('#rt-quiet-row').hidden = !$('#rt-quiet').checked; });
+    var exSel = $('#rt-example');
+    ROUTINE_EXAMPLES.forEach(function (ex, i) { var o = document.createElement('option'); o.value = String(i); o.textContent = ex.name; exSel.appendChild(o); });
+    exSel.addEventListener('change', applyRoutineExample);
+    $('#modal-body').addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-call-open]') : null;
+      if (b) openCall(b.getAttribute('data-call-open'));
+    });
     $('#modal-close').addEventListener('click', closeModal);
     $('#call-modal').addEventListener('click', function (e) { if (e.target === e.currentTarget) closeModal(); });
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });

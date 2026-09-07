@@ -8,6 +8,10 @@ import type { McpHub } from "../mcp/hub.js";
 import type { VoiceAgent, ConversationState } from "../agent/agent.js";
 import type { UsageStore } from "../usage/usage-store.js";
 import type { SessionStore } from "../calls/session.js";
+import type { RoutineStore, RoutineInput } from "../routines/store.js";
+import { NOTIFY_CHANNELS } from "../routines/store.js";
+import type { RoutineRunner } from "../routines/runner.js";
+import type { Notifier } from "../routines/notify.js";
 import { MODEL_PRICES } from "../usage/pricing.js";
 import { renderAdminPage } from "./ui.js";
 
@@ -18,6 +22,10 @@ export interface AdminDeps {
   usage: UsageStore;
   rules: RulesStore;
   sessions: SessionStore;
+  /** Proactive routines (optional so the admin works without a scheduler in tests). */
+  routines?: RoutineStore;
+  runner?: RoutineRunner;
+  notifier?: Notifier;
   logger: Logger;
   adminUser: string;
   adminPassword: string;
@@ -109,7 +117,82 @@ export function registerAdminRoutes(app: FastifyInstance, d: AdminDeps): void {
       activeCalls: d.sessions.active().map((s) => ({ callId: s.callId, phone: s.phone, startedAt: s.startedAt, turns: s.turns, thinking: !!s.pending })),
       systemPromptChars: d.agent.getSystemPrompt().length,
       toolCount: tools.length,
+      routines: listRoutines(),
+      notifyChannels: NOTIFY_CHANNELS,
     };
+  });
+
+  /* ---- Proactive routines ---- */
+  function listRoutines() {
+    if (!d.routines) return [];
+    return d.routines.list().map((r) => ({
+      ...r,
+      nextRunAt: d.runner?.nextRunAt(r)?.toISOString() ?? null,
+      running: d.runner?.isRunning(r.id) ?? false,
+    }));
+  }
+
+  app.get("/admin/api/routines", { preHandler: requireAuth }, async () => ({
+    enabled: d.settings.get().routinesEnabled,
+    routines: listRoutines(),
+    notifications: d.usage.notifications(30),
+  }));
+
+  app.post("/admin/api/routines", { preHandler: requireAuth }, async (request, reply) => {
+    if (!d.routines) return reply.code(503).send({ ok: false, error: "routines are not enabled on this server" });
+    try {
+      const routine = d.routines.add((request.body ?? {}) as RoutineInput, "admin");
+      d.logger.info({ routine: routine.id, name: routine.name }, "routine created from admin UI");
+      return { ok: true, routine, routines: listRoutines() };
+    } catch (err) {
+      return reply.code(400).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.put("/admin/api/routines/:id", { preHandler: requireAuth }, async (request, reply) => {
+    if (!d.routines) return reply.code(503).send({ ok: false, error: "routines are not enabled on this server" });
+    const { id } = request.params as { id: string };
+    try {
+      const routine = d.routines.update(id, (request.body ?? {}) as Partial<RoutineInput>, "admin");
+      return { ok: true, routine, routines: listRoutines() };
+    } catch (err) {
+      return reply.code(400).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete("/admin/api/routines/:id", { preHandler: requireAuth }, async (request, reply) => {
+    if (!d.routines) return reply.code(503).send({ ok: false, error: "routines are not enabled on this server" });
+    const { id } = request.params as { id: string };
+    try {
+      const routine = d.routines.remove(id);
+      return { ok: true, routine, routines: listRoutines() };
+    } catch (err) {
+      return reply.code(400).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /** Runs a routine now (waits for the result; a run can take a minute or two). */
+  app.post("/admin/api/routines/:id/run", { preHandler: requireAuth }, async (request, reply) => {
+    if (!d.routines || !d.runner) return reply.code(503).send({ ok: false, error: "routines are not enabled on this server" });
+    const { id } = request.params as { id: string };
+    if (!d.routines.get(id)) return reply.code(404).send({ ok: false, error: `routine ${id} does not exist` });
+    const result = await d.runner.run(id, { kind: "manual" });
+    return { ok: result.ok, result, routines: listRoutines() };
+  });
+
+  app.get("/admin/api/routines/:id/runs", { preHandler: requireAuth }, async (request) => {
+    const { id } = request.params as { id: string };
+    return { id, runs: d.usage.routineRuns(id, 50) };
+  });
+
+  /** Sends a test message on a channel so the owner can verify WhatsApp / SMS / email delivery. */
+  app.post("/admin/api/notify/test", { preHandler: requireAuth }, async (request, reply) => {
+    if (!d.notifier) return reply.code(503).send({ ok: false, error: "notifier is not enabled on this server" });
+    const body = (request.body ?? {}) as { channel?: string; text?: string };
+    const channel = (NOTIFY_CHANNELS as readonly string[]).includes(body.channel ?? "") ? (body.channel as (typeof NOTIFY_CHANNELS)[number]) : d.settings.get().notifyChannel;
+    const text = (typeof body.text === "string" && body.text.trim()) || "בדיקה: זו הודעת ניסיון מהעוזר החכם. אם קיבלת אותה, ערוץ ההתראות עובד.";
+    const outcome = await d.notifier.send(channel, text.slice(0, 1500), { subject: "בדיקת התראות", source: "admin", callId: `admin-notify-${Date.now()}` });
+    return { ok: outcome.ok, channel: outcome.channel, detail: outcome.detail };
   });
 
   app.put("/admin/api/settings", { preHandler: requireAuth }, async (request, reply) => {

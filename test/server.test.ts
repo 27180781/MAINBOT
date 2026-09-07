@@ -171,6 +171,52 @@ describe("buildServer", () => {
     expect((await server.app.inject({ method: "GET", url: "/admin/api/rules" })).statusCode).toBe(401);
   });
 
+  it("manages proactive routines through the admin API", async () => {
+    const empty = await server.app.inject({ method: "GET", url: "/admin/api/routines", headers: { authorization: AUTH } });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json()).toEqual({ enabled: true, routines: [], notifications: [] });
+
+    const created = await server.app.inject({ method: "POST", url: "/admin/api/routines", headers: { authorization: AUTH }, payload: { name: "תדריך בוקר", schedule: { kind: "cron", expression: "0 8 * * 0-4" }, prompt: "סכם את היום", channel: "log" } });
+    expect(created.statusCode).toBe(200);
+    const routine = created.json().routine;
+    expect(routine).toMatchObject({ name: "תדריך בוקר", enabled: true, channel: "log", source: "admin", schedule: { kind: "cron", expression: "0 8 * * 0-4" } });
+    expect(created.json().routines[0].nextRunAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(created.json().routines[0].running).toBe(false);
+
+    const bad = await server.app.inject({ method: "POST", url: "/admin/api/routines", headers: { authorization: AUTH }, payload: { name: "x", schedule: { kind: "cron", expression: "nope" }, prompt: "בדוק" } });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().ok).toBe(false);
+
+    const paused = await server.app.inject({ method: "PUT", url: `/admin/api/routines/${routine.id}`, headers: { authorization: AUTH }, payload: { enabled: false } });
+    expect(paused.statusCode).toBe(200);
+    expect(paused.json().routine.enabled).toBe(false);
+    expect(paused.json().routines[0].nextRunAt).toBeNull();
+    expect((await server.app.inject({ method: "PUT", url: "/admin/api/routines/rt_nope", headers: { authorization: AUTH }, payload: { enabled: true } })).statusCode).toBe(400);
+
+    const state = await server.app.inject({ method: "GET", url: "/admin/api/state", headers: { authorization: AUTH } });
+    expect(state.json().routines).toHaveLength(1);
+    expect(state.json().notifyChannels).toEqual(["log", "whatsapp", "sms", "email"]);
+
+    const runs = await server.app.inject({ method: "GET", url: `/admin/api/routines/${routine.id}/runs`, headers: { authorization: AUTH } });
+    expect(runs.json()).toEqual({ id: routine.id, runs: [] });
+    expect((await server.app.inject({ method: "POST", url: "/admin/api/routines/rt_nope/run", headers: { authorization: AUTH }, payload: {} })).statusCode).toBe(404);
+
+    const test = await server.app.inject({ method: "POST", url: "/admin/api/notify/test", headers: { authorization: AUTH }, payload: { channel: "log", text: "בדיקה" } });
+    expect(test.statusCode).toBe(200);
+    expect(test.json()).toEqual({ ok: true, channel: "log", detail: "נרשם ביומן (ערוץ log)" });
+    const noPhone = await server.app.inject({ method: "POST", url: "/admin/api/notify/test", headers: { authorization: AUTH }, payload: { channel: "whatsapp" } });
+    expect(noPhone.json()).toMatchObject({ ok: false, channel: "whatsapp", detail: expect.stringContaining("ownerPhone") });
+    expect((await server.app.inject({ method: "GET", url: "/admin/api/routines", headers: { authorization: AUTH } })).json().notifications).toHaveLength(2);
+
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "routines.json"), "utf8")).routines).toHaveLength(1);
+    const removed = await server.app.inject({ method: "DELETE", url: `/admin/api/routines/${routine.id}`, headers: { authorization: AUTH } });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toMatchObject({ ok: true, routine: { id: routine.id }, routines: [] });
+    expect((await server.app.inject({ method: "DELETE", url: `/admin/api/routines/${routine.id}`, headers: { authorization: AUTH } })).statusCode).toBe(400);
+    expect((await server.app.inject({ method: "GET", url: "/admin/api/routines" })).statusCode).toBe(401);
+    expect(server.routines.list()).toEqual([]);
+  });
+
   it("rejects PBX requests with the wrong secret", async () => {
     const res = await server.app.inject({ method: "GET", url: `/pbx/technoline/wrong?PBXcallId=c1&PBXphone=${PHONE}&PBXcallStatus=CALL` });
     expect(res.statusCode).toBe(403);

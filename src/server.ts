@@ -14,6 +14,9 @@ import { SessionStore } from "./calls/session.js";
 import { registerTechnolineRoutes } from "./pbx/technoline/route.js";
 import { registerAdminRoutes } from "./admin/routes.js";
 import { registerChatApi } from "./api/chat.js";
+import { RoutineStore } from "./routines/store.js";
+import { Notifier } from "./routines/notify.js";
+import { RoutineRunner } from "./routines/runner.js";
 
 /** 3 seconds of 8 kHz 16-bit mono silence, served as a filler when FILLER_MODE=silence. */
 export function silenceWav(seconds = 3, sampleRate = 8000): Buffer {
@@ -56,18 +59,23 @@ export async function buildServer() {
     maxToolResultChars: env.maxToolResultChars,
   });
   const anthropic = new Anthropic(env.anthropicApiKey ? { apiKey: env.anthropicApiKey } : {});
+  const routines = new RoutineStore(env.dataDir);
+  const notifier = new Notifier(hub, settings, usage, logger);
   const agent = new VoiceAgent({
     client: anthropic,
     hub,
     settings,
     usage,
     rules,
+    routines,
+    notifier,
     logger,
     instructionsPath: env.instructionsPath,
     timeZone: env.timezone,
     agentTimeoutMs: env.agentTimeoutMs,
     toolTimeoutMs: env.toolTimeoutMs,
   });
+  const runner = new RoutineRunner({ store: routines, agent, usage, settings, logger, timeZone: env.timezone });
 
   for (const w of env.warnings) logger.warn(w);
   const app = Fastify({
@@ -124,6 +132,9 @@ export async function buildServer() {
     usage,
     rules,
     sessions,
+    routines,
+    runner,
+    notifier,
     logger,
     adminUser: env.adminUser,
     adminPassword: env.adminPassword,
@@ -178,6 +189,7 @@ export async function buildServer() {
 
   const chatSessions = registerChatApi(app, {
     agent,
+    runner,
     logger,
     apiKey: env.chatApiKey,
     corsOrigins: env.chatCorsOrigins,
@@ -192,18 +204,23 @@ export async function buildServer() {
 
   app.addHook("onClose", async () => {
     clearInterval(sweeper);
+    runner.stop();
     await hub.stop();
   });
 
-  return { app, hub, agent, settings, usage, rules, sessions, chatSessions, flow };
+  return { app, hub, agent, settings, usage, rules, routines, runner, notifier, sessions, chatSessions, flow };
 }
 
 async function main(): Promise<void> {
-  const { app, hub } = await buildServer();
+  const { app, hub, runner } = await buildServer();
   await app.listen({ port: env.port, host: env.host });
   logger.info({ port: env.port, admin: `${env.publicBaseUrl || `http://localhost:${env.port}`}/admin` }, "MAINBOT phone agent listening");
-  // Connect to MCP servers in the background so a slow server never delays startup.
-  void hub.start().then(() => logger.info({ servers: hub.status().map((s) => `${s.name}:${s.state}(${s.toolCount})`) }, "MCP servers ready"));
+  // Connect to MCP servers in the background so a slow server never delays startup; the
+  // routine scheduler starts only once the tools are there, so a boot-time run is never empty.
+  void hub.start().then(() => {
+    logger.info({ servers: hub.status().map((s) => `${s.name}:${s.state}(${s.toolCount})`) }, "MCP servers ready");
+    runner.start();
+  });
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "shutting down");
