@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Logger } from "../../logger.js";
 import type { SettingsStore } from "../../config.js";
@@ -49,7 +50,10 @@ function countSpokenUtterances(params: Record<string, string>, before: number): 
  * unique parameter name (utt_N) and the session remembers which ones were consumed.
  */
 export class TechnolineCallFlow {
-  constructor(private readonly d: TechnolineDeps) {}
+  constructor(private readonly d: TechnolineDeps) {
+    // A call whose HANGUP never arrived (PBX restart, network) is still recorded when it expires.
+    d.sessions.setExpiryHandler((session) => this.finalize(session, "timeout"));
+  }
 
   async handle(req: PbxRequest): Promise<PbxResponse | Record<string, never>> {
     const { sessions, logger } = this.d;
@@ -187,9 +191,10 @@ export class TechnolineCallFlow {
       fillers: 0,
       result: null as AgentReply | null,
       promise: Promise.resolve<AgentReply | null>(null) as Promise<AgentReply>,
+      abort: new AbortController(),
     };
     job.promise = this.d.agent
-      .respond(session.conv, text, { phone: session.phone })
+      .respond(session.conv, text, { phone: session.phone }, { signal: job.abort.signal })
       .catch((err: unknown): AgentReply => {
         this.d.logger.error({ callId: session.callId, err: err instanceof Error ? err.message : String(err) }, "agent crashed");
         return { text: "משהו השתבש אצלי. אפשר לחזור על הבקשה?", endCall: false, iterations: 0, toolCalls: [], durationMs: Date.now() - job.startedAt, error: String(err) };
@@ -244,6 +249,11 @@ export class TechnolineCallFlow {
     if (session.ended) return;
     session.ended = true;
     session.endedBy = reason;
+    // Nobody will hear the answer: stop the model and tool loop instead of paying for it.
+    if (session.pending && !session.pending.result) {
+      this.d.logger.info({ callId: session.callId, reason }, "cancelling the pending agent turn");
+      session.pending.abort.abort();
+    }
     // Keep the ended session briefly so the trailing HANGUP request is recognised, then drop it.
     setTimeout(() => this.d.sessions.delete(session.callId), 60_000).unref();
     this.d.logger.info({ callId: session.callId, reason, turns: session.turns }, "call ended");
@@ -272,9 +282,15 @@ export function parseFormBody(body: string): Record<string, string> {
 
 export function registerTechnolineRoutes(app: FastifyInstance, deps: TechnolineDeps): TechnolineCallFlow {
   const flow = new TechnolineCallFlow(deps);
+  const secretOk = (secret: string | undefined): boolean => {
+    if (!deps.webhookSecret || !secret) return false;
+    const a = Buffer.from(secret);
+    const b = Buffer.from(deps.webhookSecret);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  };
   const handler = async (request: FastifyRequest, reply: FastifyReply) => {
     const { secret } = request.params as { secret?: string };
-    if (!deps.webhookSecret || secret !== deps.webhookSecret) {
+    if (!secretOk(secret)) {
       deps.logger.warn({ ip: request.ip }, "PBX request with bad secret");
       return reply.code(403).send({});
     }
@@ -291,17 +307,19 @@ export function registerTechnolineRoutes(app: FastifyInstance, deps: TechnolineD
       return reply.header("Content-Type", "application/json; charset=utf-8").send(chain(say("אירעה שגיאה. נסו שוב מאוחר יותר."), hangup()));
     }
   };
-  // The PBX uses GET; the POST variant accepts JSON or form bodies for manual testing.
-  if (!app.hasContentTypeParser("application/x-www-form-urlencoded")) {
-    app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_req, body, done) => {
+  // The PBX uses GET; the POST variant accepts JSON or form bodies for manual testing. The form
+  // parser lives in this encapsulated plugin only: the admin API must keep rejecting form
+  // bodies, or a cross-site form post with the browser's cached Basic credentials could drive it.
+  void app.register(async (pbx) => {
+    pbx.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_req, body, done) => {
       try {
         done(null, parseFormBody(String(body)));
       } catch (err) {
         done(err as Error, undefined);
       }
     });
-  }
-  app.get("/pbx/technoline/:secret", handler);
-  app.post("/pbx/technoline/:secret", handler);
+    pbx.get("/pbx/technoline/:secret", handler);
+    pbx.post("/pbx/technoline/:secret", handler);
+  });
   return flow;
 }

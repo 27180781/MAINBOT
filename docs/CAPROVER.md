@@ -30,7 +30,7 @@
 | `WEBHOOK_SECRET` | כן | מחרוזת אקראית ארוכה (למשל `openssl rand -hex 24`). כתובת המרכזייה תהיה `https://<domain>/pbx/technoline/<WEBHOOK_SECRET>` |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | כן | פרטי הכניסה לממשק הניהול `/admin` |
 | `PUBLIC_BASE_URL` | כן | הכתובת הציבורית של האפליקציה ב-HTTPS, בלי `/` בסוף. נדרש להתחברויות OAuth ל-MCP ולקובצי השמע |
-| `ALLOWED_CALLER_PHONES` | כן | המספרים שמורשים להתקשר, מופרדים בפסיק (למשל `0533173438`). אפשר לשנות גם מ-`/admin` |
+| `ALLOWED_CALLER_PHONES` | כן | המספרים שמורשים להתקשר, מופרדים בפסיק (למשל `0501234567`). אפשר לשנות גם מ-`/admin` |
 | `BOT_PIN` | לא | קוד גישה מספרי שיתבקש בתחילת כל שיחה |
 | `BOT_MODEL` / `BOT_EFFORT` | לא | ברירת מחדל `claude-opus-5` / `medium`. ניתן לשנות בכל רגע מ-`/admin` |
 | `TRUST_PROXY` | לא | `true` (ברירת המחדל) - CapRover עומד מאחורי nginx |

@@ -21,7 +21,7 @@ Developer reference for the Hebrew voice assistant that sits between the Technol
 
 | File | Responsibility |
 |---|---|
-| `src/server.ts` | Builds the Fastify app (`buildServer`), wires stores, hub, agent and routes; raises `maxHeaderSize` to 128 KB because the PBX accumulates every module result in the query string; `/health`, `/audio/silence.wav`, session sweeper, graceful shutdown. |
+| `src/server.ts` | Builds the Fastify app (`buildServer`), wires stores, hub, agent and routes; raises `maxHeaderSize` to 512 KB because the PBX accumulates every module result in the query string; `/health`, `/audio/silence.wav`, session sweeper, graceful shutdown. |
 | `src/config.ts` | Reads the environment once (`env`), defines the runtime `SettingsSchema` (zod) and `SettingsStore` (persisted to `data/settings.json`), phone normalisation and allow-list check. |
 | `src/logger.ts` | pino logger; pretty output unless `NODE_ENV=production` (override with `LOG_PRETTY=1`). |
 | `src/pbx/technoline/types.ts` | Typed subset of the PBX API module: request params and the JSON modules we return (`simpleMessage`, `stt`, `getDTMF`, `simpleMenu`, `goTo`, `hangup`, ...). |
@@ -100,13 +100,13 @@ Developer reference for the Hebrew voice assistant that sits between the Technol
 
 ## Confirmation gate rules
 
-`ConfirmationGate.check(tool, fullName, args, turn, serverReadOnly)` runs before every MCP tool call and every local write tool (`add_rule`, `update_rule`, `remove_rule`). Decisions, in order:
+`ConfirmationGate.check(tool, fullName, args, turn, serverReadOnly)` runs before every MCP tool call and every local write tool (`add_rule`, `update_rule`, `remove_rule`, `add_routine`, `toggle_routine`, `remove_routine`). The gate reads `blockedTools` / `confirmWrites` from the live settings on every check, so an admin change applies to conversations that are already open. Decisions, in order:
 
 1. **Blocked** - `fullName` matches any pattern in `settings.blockedTools` (each entry is tried as a case-insensitive regex, falling back to substring). Denied with reason `blocked`; the model is told to say it must be done from the computer. Never overridable.
 2. **Classification** (`classifyTool`): `annotations.readOnlyHint === true` → read; `annotations.destructiveHint === true` → write; otherwise the tool's base name (after `__`) is matched against write verbs (`create|add|update|delete|remove|send|set|manage|mark|merge|...`) first, then read verbs (`get|list|search|find|read|fetch|check|...`, suffixes `_summary|_report|_stats|_status|...`). Unknown verbs are treated as **write**.
 3. **Read tools** run immediately.
 4. **Read-only server** (`readOnly: true` in `mcp-servers.json`) - every write is denied with reason `read_only_server`.
-5. **No confirmation needed** when `settings.confirmWrites` is `false`, or the tool's input schema already has a server-side handshake property (`confirm`, `confirmation_token`, `confirmationToken`, `confirm_token`) - those servers return a preview themselves.
+5. **No confirmation needed** when `settings.confirmWrites` is `false`, or the call is the *preview* step of a server-side handshake: the tool's input schema has a handshake property (`confirm`, `confirmation_token`, `confirmationToken`, `confirm_token`) and the call carries neither `confirm: true` nor a token, so the server only describes the action. The executing call (`confirm: true` / a token) goes through step 6 like any other write, so the model cannot skip the caller by confirming itself.
 6. **Two-turn handshake.** The first request for `fullName` in caller turn *N* is denied with reason `confirmation_required` and a `CONFIRMATION REQUIRED` message; the pending entry `{turn: N, args}` is stored per tool name. A request for the same tool in turn *N+1* or *N+2* (`approvalWindowTurns = 2`) is allowed and clears the entry. Requests in the same turn *N* stay denied, so the model cannot "confirm" itself. `expire(turn)` drops entries older than the window at the start of each turn.
 
 The system prompt mirrors these rules in Hebrew so the model describes the action, waits for a spoken "yes", and only then calls the tool again with the same arguments.
@@ -175,4 +175,4 @@ Nothing else is persisted: call sessions, admin chat sessions and the tool catal
 | `maxTurns` / `maxSilentTurns` | 60 / 2 | Per call. |
 | `MAX_HISTORY_MESSAGES` | 60 | Compaction threshold (summary with `effort: low`). |
 | `SESSION_TTL_MS` | 30 min | Idle session sweep. |
-| HTTP header size | 128 KB | `serverFactory` in `server.ts`. |
+| HTTP header size | 512 KB | `serverFactory` in `server.ts`. |

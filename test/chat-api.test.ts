@@ -126,6 +126,30 @@ describe("chat API", () => {
     expect(again.json()).toEqual({ ok: true, deleted: false });
   });
 
+  it("runs overlapping messages on one session one after another", async () => {
+    const order: string[] = [];
+    parts.respond.mockImplementation(async (conv: ConversationState, text: string) => {
+      order.push(`start:${text}`);
+      await new Promise((r) => setTimeout(r, 15));
+      order.push(`end:${text}`);
+      return { text: `echo(${conv.callId}): ${text}`, endCall: false, iterations: 1, toolCalls: [], durationMs: 15 };
+    });
+    const headers = { authorization: `Bearer ${KEY}` };
+    const [a, b] = await Promise.all([
+      app.inject({ method: "POST", url: "/api/v1/chat", headers, payload: { message: "א", sessionId: "crm:u:serial" } }),
+      app.inject({ method: "POST", url: "/api/v1/chat", headers, payload: { message: "ב", sessionId: "crm:u:serial" } }),
+    ]);
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(200);
+    expect(order).toEqual(["start:א", "end:א", "start:ב", "end:ב"]);
+    // a reset waits for the running turn instead of pulling the conversation from under it
+    const c = app.inject({ method: "POST", url: "/api/v1/chat", headers, payload: { message: "ג", sessionId: "crm:u:serial" } });
+    const d = app.inject({ method: "POST", url: "/api/v1/chat", headers, payload: { message: "ד", sessionId: "crm:u:serial", reset: true } });
+    await Promise.all([c, d]);
+    expect(order.slice(4)).toEqual(["start:ג", "end:ג", "start:ד", "end:ד"]);
+    expect(parts.newConversation.mock.calls.filter((call) => call[0] === "crm:u:serial")).toHaveLength(2);
+  });
+
   it("sends CORS headers only for allowed origins", async () => {
     const ok = await app.inject({ method: "OPTIONS", url: "/api/v1/chat", headers: { origin: "https://crm.example.com" } });
     expect(ok.statusCode).toBe(204);

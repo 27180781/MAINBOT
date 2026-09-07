@@ -6,6 +6,8 @@ export interface PendingJob {
   fillers: number;
   promise: Promise<AgentReply>;
   result: AgentReply | null;
+  /** Cancels the agent turn (the caller hung up: no point finishing the answer). */
+  abort: AbortController;
 }
 
 export interface CallSession {
@@ -30,8 +32,14 @@ export interface CallSession {
 
 export class SessionStore {
   private readonly sessions = new Map<string, CallSession>();
+  private onExpire: ((session: CallSession) => void) | null = null;
 
   constructor(private readonly ttlMs: number) {}
+
+  /** Called for every not-yet-ended session the sweeper drops, so the call can still be recorded. */
+  setExpiryHandler(fn: (session: CallSession) => void): void {
+    this.onExpire = fn;
+  }
 
   get(callId: string): CallSession | undefined {
     const s = this.sessions.get(callId);
@@ -78,6 +86,13 @@ export class SessionStore {
     let n = 0;
     for (const [id, s] of this.sessions) {
       if (now - s.lastActivity > this.ttlMs) {
+        if (!s.ended && this.onExpire) {
+          try {
+            this.onExpire(s);
+          } catch {
+            /* never let a handler stop the sweep */
+          }
+        }
         this.sessions.delete(id);
         n++;
       }

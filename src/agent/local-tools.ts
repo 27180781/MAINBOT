@@ -38,7 +38,7 @@ export const LOCAL_TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: ADD_RULE_TOOL,
     description:
-      "Saves a new permanent rule for yourself, written in Hebrew as a short imperative sentence (e.g. 'כשמדווחים על לידים, תמיד לציין את הטלפון'). Use it when the owner says things like 'מעכשיו', 'תזכור ש', 'תמיד', 'אף פעם', 'תכתוב לעצמך כלל'. Read the exact rule text back to the caller and get a yes before it is saved; it takes effect from the next call. Never store passwords or secrets in a rule.",
+      "Saves a new permanent rule for yourself, written in Hebrew as a short imperative sentence (e.g. 'כשמדווחים על לידים, תמיד לציין את הטלפון'). Use it when the owner says things like 'מעכשיו', 'תזכור ש', 'תמיד', 'אף פעם', 'תכתוב לעצמך כלל'. Call it right away with the proposed text: the first call is blocked with CONFIRMATION REQUIRED - read that exact text to the owner, and after their yes call it again with the same text (one confirmation in total). It takes effect from the next call. Never store passwords or secrets in a rule.",
     input_schema: {
       type: "object",
       properties: { text: { type: "string", description: "The rule text in Hebrew, one or two sentences, general enough to apply in future calls." } },
@@ -48,7 +48,7 @@ export const LOCAL_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
   {
     name: UPDATE_RULE_TOOL,
-    description: "Rewrites the text of an existing permanent rule by its number (see list_rules or the numbered rules in your instructions). Read the new text back and get a yes first.",
+    description: "Rewrites the text of an existing permanent rule by its number (see list_rules or the numbered rules in your instructions). Call it with the new text; the first call is blocked so you can read the text back - after the owner's yes call it again with the same arguments.",
     input_schema: {
       type: "object",
       properties: { id: { type: "integer", description: "Rule number" }, text: { type: "string", description: "New rule text in Hebrew" } },
@@ -58,7 +58,7 @@ export const LOCAL_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
   {
     name: REMOVE_RULE_TOOL,
-    description: "Deletes a permanent rule by its number. Read the rule back and get a yes first.",
+    description: "Deletes a permanent rule by its number. The first call is blocked so you can read the rule back; after the owner's yes call it again.",
     input_schema: {
       type: "object",
       properties: { id: { type: "integer", description: "Rule number" } },
@@ -74,7 +74,7 @@ export const LOCAL_TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: ADD_ROUTINE_TOOL,
     description:
-      "Creates a proactive routine: the assistant will run the given Hebrew instruction on a schedule (or on an event) with read-only access to all systems, and notify the owner only when there is something worth reporting, with concrete suggestions. Use it when the owner says things like 'כל בוקר תשלח לי סיכום', 'תתריע לי אם...', 'פעם בשבוע תבדוק...'. Read back the name, the schedule and the channel and get a yes before creating it. " +
+      "Creates a proactive routine: the assistant will run the given Hebrew instruction on a schedule (or on an event) with read-only access to all systems, and notify the owner only when there is something worth reporting, with concrete suggestions. Use it when the owner says things like 'כל בוקר תשלח לי סיכום', 'תתריע לי אם...', 'פעם בשבוע תבדוק...'. Call it right away with the full definition: the first call is blocked with CONFIRMATION REQUIRED - read back the name, schedule and channel, and after the owner's yes call it again with exactly the same arguments. " +
       SCHEDULE_HELP,
     input_schema: {
       type: "object",
@@ -93,7 +93,7 @@ export const LOCAL_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
   {
     name: TOGGLE_ROUTINE_TOOL,
-    description: "Enables or disables a routine by id. Confirm with the owner first.",
+    description: "Enables or disables a routine by id. The first call is blocked so you can confirm with the owner; call again after their yes.",
     input_schema: {
       type: "object",
       properties: { id: { type: "string" }, enabled: { type: "boolean" } },
@@ -103,7 +103,7 @@ export const LOCAL_TOOLS: Anthropic.Beta.BetaTool[] = [
   },
   {
     name: REMOVE_ROUTINE_TOOL,
-    description: "Deletes a routine by id. Read its name back and get a yes first.",
+    description: "Deletes a routine by id. The first call is blocked so you can read its name back; call again after the owner's yes.",
     input_schema: {
       type: "object",
       properties: { id: { type: "string" } },

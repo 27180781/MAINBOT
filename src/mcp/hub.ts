@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport, SseError } from "@modelcontextprotocol/sdk/client/sse.js";
 import { auth, UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
@@ -57,6 +57,8 @@ interface Connection {
   connectedAt?: string;
   serverInfo?: { name: string; version: string };
   connecting?: Promise<void>;
+  /** In-flight proactive token refresh (credentials()), so parallel callers share one refresh. */
+  refreshing?: Promise<void>;
 }
 
 export interface McpHubOptions {
@@ -68,6 +70,28 @@ export interface McpHubOptions {
   logger: Logger;
   toolTimeoutMs?: number;
   maxToolResultChars?: number;
+  /** Upper bound for one connect attempt (transport start + initialize) and for listing tools. */
+  connectTimeoutMs?: number;
+}
+
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+
+/** Rejects when `p` takes longer than `ms`, running `onExpire` (best effort) so the underlying work is cancelled. */
+export async function withDeadline<T>(p: Promise<T>, ms: number, what: string, onExpire?: () => Promise<unknown> | unknown): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      Promise.resolve()
+        .then(() => onExpire?.())
+        .catch(() => undefined);
+      reject(new Error(`${what} timed out after ${ms} ms`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([p, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function toolFullName(server: string, tool: string): string {
@@ -146,7 +170,9 @@ export class McpHub {
     const provider = this.providerFor(c) ?? undefined;
     const requestInit: RequestInit | undefined = Object.keys(headers).length ? { headers } : undefined;
     if (kind === "http") return new StreamableHTTPClientTransport(url, { authProvider: provider, requestInit });
-    return new SSEClientTransport(url, { authProvider: provider, requestInit, eventSourceInit: requestInit ? { fetch: (input, init) => fetch(input, { ...init, headers: { ...(init?.headers as Record<string, string>), ...headers } }) } : undefined });
+    // requestInit.headers are merged into the SSE GET and every POST by the SDK itself; a custom
+    // eventSourceInit.fetch would have to rebuild the Accept / Authorization headers by hand.
+    return new SSEClientTransport(url, { authProvider: provider, requestInit });
   }
 
   async connectServer(name: string): Promise<void> {
@@ -172,24 +198,29 @@ export class McpHub {
     const provider = this.providerFor(c);
     if (provider && !provider.hasTokens()) this.log.info({ server: c.config.name }, "no OAuth tokens stored yet - trying to connect anyway");
     const kinds: Array<"http" | "sse"> = c.config.transport === "auto" ? ["http", "sse"] : [c.config.transport];
+    const connectTimeoutMs = this.opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     let lastError: unknown;
     for (const kind of kinds) {
       const client = new Client(CLIENT_INFO, { capabilities: {} });
       const transport = this.makeTransport(c, kind);
+      // Registered before connect(): the protocol layer chains these handlers and keeps its own
+      // (which reject in-flight requests on close) instead of being replaced by them.
+      client.onclose = () => {
+        if (c.client === client) {
+          c.client = null;
+          c.transport = null;
+          if (c.state === "connected") c.state = "disconnected";
+          this.log.warn({ server: c.config.name }, "MCP transport closed");
+        }
+      };
+      client.onerror = (err) => this.log.warn({ server: c.config.name, err: err.message }, "MCP transport error");
       try {
-        await client.connect(transport);
+        // Client.connect's own timeout covers only the initialize request; the deadline also
+        // covers a transport start that never completes (a hung SSE endpoint, for example).
+        await withDeadline(client.connect(transport, { timeout: connectTimeoutMs }), connectTimeoutMs, `connect to "${c.config.name}" (${kind})`, () => client.close());
         c.client = client;
         c.transport = transport;
-        transport.onclose = () => {
-          if (c.client === client) {
-            c.client = null;
-            c.transport = null;
-            if (c.state === "connected") c.state = "disconnected";
-            this.log.warn({ server: c.config.name }, "MCP transport closed");
-          }
-        };
-        transport.onerror = (err) => this.log.warn({ server: c.config.name, err: err.message }, "MCP transport error");
-        c.tools = await this.fetchTools(c, client);
+        c.tools = await this.fetchTools(c, client, connectTimeoutMs);
         const info = client.getServerVersion();
         c.serverInfo = info ? { name: info.name, version: info.version } : undefined;
         c.state = "connected";
@@ -216,11 +247,11 @@ export class McpHub {
     c.error = errorMessage(lastError);
   }
 
-  private async fetchTools(c: Connection, client: Client): Promise<CatalogTool[]> {
+  private async fetchTools(c: Connection, client: Client, timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS): Promise<CatalogTool[]> {
     const tools: McpTool[] = [];
     let cursor: string | undefined;
     do {
-      const page = await client.listTools(cursor ? { cursor } : undefined);
+      const page = await client.listTools(cursor ? { cursor } : undefined, { timeout: timeoutMs });
       tools.push(...page.tools);
       cursor = page.nextCursor;
     } while (cursor);
@@ -288,16 +319,29 @@ export class McpHub {
         const result = await c.client.callTool({ name: tool.name, arguments: args }, undefined, { timeout: timeoutMs });
         return { text: this.renderResult(result), isError: result.isError === true, durationMs: Date.now() - started };
       } catch (err) {
-        if (err instanceof UnauthorizedError) {
-          c.state = "needs_login";
-          c.error = "נדרשת התחברות מחדש (OAuth)";
-          await this.closeConnection(c);
-          this.emit();
-          return { text: `Service "${c.config.name}" requires a new login by the administrator.`, isError: true, durationMs: Date.now() - started };
-        }
         const msg = errorMessage(err);
-        const transportGone = !c.client || /closed|ECONNRESET|socket|fetch failed|Not connected/i.test(msg);
-        this.log.warn({ server: c.config.name, tool: tool.name, attempt, err: msg }, "MCP tool call failed");
+        // Non-OK HTTP answers surface as transport errors with a status: 401/403 after a token
+        // refresh, 404 for a session the server forgot after a redeploy, 5xx while it restarts.
+        const status = err instanceof StreamableHTTPError || err instanceof SseError ? err.code : undefined;
+        const unauthorized = err instanceof UnauthorizedError || status === 401 || status === 403;
+        if (unauthorized) {
+          // A fresh transport re-runs the auth flow once (refresh or re-login) before giving up.
+          await this.closeConnection(c);
+          if (attempt === 0 && !(err instanceof UnauthorizedError)) {
+            this.log.warn({ server: c.config.name, tool: tool.name, status }, "MCP call unauthorized - reconnecting once");
+            continue;
+          }
+          c.state = c.config.auth.type === "oauth" ? "needs_login" : "error";
+          c.error = c.config.auth.type === "oauth" ? "נדרשת התחברות מחדש (OAuth)" : `השרת דחה את האימות (HTTP ${status ?? 401})`;
+          this.emit();
+          return {
+            text: c.config.auth.type === "oauth" ? `Service "${c.config.name}" requires a new login by the administrator.` : `Service "${c.config.name}" rejected our credentials (HTTP ${status ?? 401}).`,
+            isError: true,
+            durationMs: Date.now() - started,
+          };
+        }
+        const transportGone = !c.client || status !== undefined || /closed|ECONNRESET|socket|fetch failed|Not connected|session/i.test(msg);
+        this.log.warn({ server: c.config.name, tool: tool.name, attempt, status, err: msg }, "MCP tool call failed");
         if (transportGone && attempt === 0) {
           await this.closeConnection(c);
           continue;
@@ -350,13 +394,19 @@ export class McpHub {
     if (!c) throw new Error(`Unknown MCP server "${name}"`);
     if (c.config.auth.type !== "oauth") throw new Error(`Server "${name}" does not use OAuth`);
     const provider = this.providerFor(c)!;
-    provider.invalidateCredentials("tokens");
+    // The working tokens stay in place (and the open connection keeps serving calls) until the
+    // new login succeeds; loginView() hides them from the SDK so it starts the redirect.
+    provider.prepareLogin();
     let redirectUrl: string | undefined;
     provider.onRedirect = (url) => {
       redirectUrl = url.toString();
     };
-    const result = await auth(provider, { serverUrl: c.config.url, scope: oauthScope(c.config) });
-    provider.onRedirect = undefined;
+    let result: "AUTHORIZED" | "REDIRECT";
+    try {
+      result = await auth(provider.loginView(), { serverUrl: c.config.url, scope: oauthScope(c.config) });
+    } finally {
+      provider.onRedirect = undefined;
+    }
     if (result === "AUTHORIZED") {
       await this.connectServer(name);
       this.emit();
@@ -372,10 +422,16 @@ export class McpHub {
     if (!c) throw new Error(`Unknown MCP server "${name}"`);
     const provider = this.providerFor(c);
     if (!provider) throw new Error(`Server "${name}" does not use OAuth`);
-    const expected = provider.expectedState();
-    if (expected && state && expected !== state) throw new Error("OAuth state mismatch - start the login again");
-    const result = await auth(provider, { serverUrl: c.config.url, authorizationCode: code, scope: oauthScope(c.config) });
-    if (result !== "AUTHORIZED") throw new Error("OAuth flow did not complete");
+    // The callback is unauthenticated: only a login started here, within its time window and
+    // carrying the exact state, may exchange a code - and only once (state + verifier are consumed).
+    if (!provider.loginPending()) throw new Error("No OAuth login is pending (or it expired) - start the login again");
+    if (!provider.stateMatches(state)) throw new Error("OAuth state mismatch - start the login again");
+    try {
+      const result = await auth(provider.loginView(), { serverUrl: c.config.url, authorizationCode: code, scope: oauthScope(c.config) });
+      if (result !== "AUTHORIZED") throw new Error("OAuth flow did not complete");
+    } finally {
+      provider.consumePendingLogin();
+    }
     await this.connectServer(name);
     this.emit();
   }
@@ -395,11 +451,14 @@ export class McpHub {
       if (provider) {
         const left = provider.secondsUntilExpiry();
         if (provider.hasTokens() && provider.tokens()?.refresh_token && left !== null && left < 120) {
-          try {
-            await auth(provider, { serverUrl: c.config.url, scope: oauthScope(c.config) });
-          } catch (err) {
-            this.log.warn({ server: c.config.name, err: errorMessage(err) }, "token refresh for shared credentials failed");
-          }
+          // One refresh at a time per server; parallel callers wait for the same one.
+          c.refreshing ??= auth(provider, { serverUrl: c.config.url, scope: oauthScope(c.config) })
+            .then(() => undefined)
+            .catch((err: unknown) => this.log.warn({ server: c.config.name, err: errorMessage(err) }, "token refresh for shared credentials failed"))
+            .finally(() => {
+              c.refreshing = undefined;
+            });
+          await c.refreshing;
         }
         const token = provider.tokens()?.access_token;
         if (token) headers.Authorization = `Bearer ${token}`;

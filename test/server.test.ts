@@ -217,6 +217,56 @@ describe("buildServer", () => {
     expect(server.routines.list()).toEqual([]);
   });
 
+  it("refuses cross-site and form-encoded requests to the admin API (CSRF)", async () => {
+    // A cross-site form post replays the browser's Basic credentials but cannot send JSON.
+    const form = await server.app.inject({ method: "POST", url: "/admin/api/rules", headers: { authorization: AUTH, "content-type": "application/x-www-form-urlencoded" }, payload: "text=evil" });
+    expect(form.statusCode).toBe(415);
+    const crossSite = await server.app.inject({ method: "POST", url: "/admin/api/rules", headers: { authorization: AUTH, "content-type": "application/json", "sec-fetch-site": "cross-site" }, payload: { text: "evil" } });
+    expect(crossSite.statusCode).toBe(403);
+    const login = await server.app.inject({ method: "GET", url: "/admin/mcp/crm/login", headers: { authorization: AUTH, "sec-fetch-site": "cross-site" } });
+    expect(login.statusCode).toBeGreaterThanOrEqual(300);
+    expect(login.headers.location).toContain("login=error");
+    expect(server.rules.list().some((r) => r.text === "evil")).toBe(false);
+    // Same-origin JSON keeps working.
+    const ok = await server.app.inject({ method: "POST", url: "/admin/api/rules", headers: { authorization: AUTH, "content-type": "application/json", "sec-fetch-site": "same-origin" }, payload: { text: "כלל תקין" } });
+    expect(ok.statusCode).toBe(200);
+    await server.app.inject({ method: "DELETE", url: `/admin/api/rules/${ok.json().rule.id}`, headers: { authorization: AUTH } });
+  });
+
+  it("sends security headers with the admin page and no-store on the API", async () => {
+    const page = await server.app.inject({ method: "GET", url: "/admin", headers: { authorization: AUTH } });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+    expect(page.headers["x-frame-options"]).toBe("DENY");
+    expect(page.headers["x-content-type-options"]).toBe("nosniff");
+    expect(page.headers["referrer-policy"]).toBe("no-referrer");
+    expect(page.headers["cache-control"]).toBe("no-store");
+    const api = await server.app.inject({ method: "GET", url: "/admin/api/state", headers: { authorization: AUTH } });
+    expect(api.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("refuses an OAuth callback that does not belong to a login started here", async () => {
+    // Built separately with an OAuth server configured (the shared instance has none). The
+    // server is disabled so nothing is contacted; the callback route still resolves it.
+    const cfg = path.join(dir, "mcp-servers-oauth.json");
+    fs.writeFileSync(cfg, JSON.stringify({ servers: [{ name: "crm", label: "CRM", url: "https://crm.example.com/mcp", auth: { type: "oauth" }, enabled: false }] }), "utf8");
+    vi.stubEnv("MCP_CONFIG_PATH", cfg);
+    vi.resetModules();
+    const mod = await import("../src/server.js");
+    const other = await mod.buildServer();
+    try {
+      const res = await other.app.inject({ method: "GET", url: "/oauth/callback/crm?code=abc" });
+      expect(res.statusCode).toBeGreaterThanOrEqual(300);
+      expect(decodeURIComponent(res.headers.location ?? "")).toContain("No OAuth login is pending");
+      const withState = await other.app.inject({ method: "GET", url: "/oauth/callback/crm?code=abc&state=nope" });
+      expect(decodeURIComponent(withState.headers.location ?? "")).toContain("No OAuth login is pending");
+      expect(fs.existsSync(path.join(dir, "auth", "crm.json")) ? JSON.parse(fs.readFileSync(path.join(dir, "auth", "crm.json"), "utf8")) : {}).toEqual({});
+    } finally {
+      await other.app.close();
+      vi.stubEnv("MCP_CONFIG_PATH", path.join(dir, "mcp-servers.json"));
+    }
+  });
+
   it("rejects PBX requests with the wrong secret", async () => {
     const res = await server.app.inject({ method: "GET", url: `/pbx/technoline/wrong?PBXcallId=c1&PBXphone=${PHONE}&PBXcallStatus=CALL` });
     expect(res.statusCode).toBe(403);

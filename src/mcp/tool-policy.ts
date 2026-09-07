@@ -39,10 +39,30 @@ export function classifyTool(tool: ToolLike): "read" | "write" {
   return "write";
 }
 
+const TOKEN_KEYS = ["confirmation_token", "confirmationToken", "confirm_token"];
+
 /** Tools whose server already enforces a preview -> confirm handshake (confirm=true / confirmation_token). */
 export function hasServerSideConfirmation(tool: ToolLike): boolean {
   const props = tool.inputSchema?.properties ?? {};
-  return ["confirm", "confirmation_token", "confirmationToken", "confirm_token"].some((k) => k in props);
+  return ["confirm", ...TOKEN_KEYS].some((k) => k in props);
+}
+
+/**
+ * True for the *preview* step of a server-side handshake: the call carries neither
+ * `confirm: true` nor a confirmation token, so the server only describes what it would do.
+ * The executing call goes through the normal two-turn gate - otherwise the model could pass
+ * `confirm: true` (or the token it just received) on the first call and skip the caller.
+ */
+export function isHandshakePreview(tool: ToolLike, args: unknown): boolean {
+  if (!hasServerSideConfirmation(tool)) return false;
+  const a = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+  const confirm = a.confirm;
+  if (confirm === true || (typeof confirm === "string" && /^(true|yes|1)$/i.test(confirm.trim())) || (typeof confirm === "number" && confirm !== 0)) return false;
+  for (const k of TOKEN_KEYS) {
+    const v = a[k];
+    if ((typeof v === "string" && v.trim()) || typeof v === "number") return false;
+  }
+  return true;
 }
 
 export function isBlocked(fullName: string, patterns: string[]): boolean {
@@ -94,7 +114,12 @@ export interface GateOptions {
 export class ConfirmationGate {
   private pending = new Map<string, Pending>();
 
-  constructor(private readonly opts: GateOptions) {}
+  /** Options may be a function so long-lived conversations (chat sessions) follow the live admin settings. */
+  constructor(private readonly source: GateOptions | (() => GateOptions)) {}
+
+  private get opts(): GateOptions {
+    return typeof this.source === "function" ? this.source() : this.source;
+  }
 
   check(tool: ToolLike, fullName: string, args: unknown, turn: number, serverReadOnly = false): GateDecision {
     if (isBlocked(fullName, this.opts.blockedTools)) {
@@ -105,7 +130,7 @@ export class ConfirmationGate {
     if (serverReadOnly) {
       return { allowed: false, reason: "read_only_server", message: "This service is connected in read-only mode. Tell the caller the change must be made from the computer." };
     }
-    if (!this.opts.confirmWrites || hasServerSideConfirmation(tool)) return { allowed: true };
+    if (!this.opts.confirmWrites || isHandshakePreview(tool, args)) return { allowed: true };
     const window = this.opts.approvalWindowTurns ?? 2;
     const key = stableStringify(args ?? {});
     const prev = this.pending.get(fullName);

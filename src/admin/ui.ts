@@ -259,8 +259,8 @@ const BODY = String.raw`
         <input type="number" id="f-sttMaxSeconds" min="1" max="10" step="1">
       </div>
       <div class="field">
-        <label for="f-maxTurns">מקסימום תורות בשיחה (1–500)</label>
-        <input type="number" id="f-maxTurns" min="1" max="500" step="1">
+        <label for="f-maxTurns">מקסימום תורות בשיחה (1–150)</label>
+        <input type="number" id="f-maxTurns" min="1" max="150" step="1">
       </div>
       <div class="field">
         <label for="f-maxSilentTurns">מקסימום תורות שקטים ברצף (1–10)</label>
@@ -626,7 +626,7 @@ const SCRIPT = String.raw`
     ['maxIterationsPerTurn', 'מקסימום סבבי מודל בתור', 1, 50],
     ['maxPinAttempts', 'מספר ניסיונות קוד', 1, 10],
     ['sttMaxSeconds', 'משך הקלטה מקסימלי', 1, 10],
-    ['maxTurns', 'מקסימום תורות בשיחה', 1, 500],
+    ['maxTurns', 'מקסימום תורות בשיחה', 1, 150],
     ['maxSilentTurns', 'מקסימום תורות שקטים', 1, 10]
   ];
 

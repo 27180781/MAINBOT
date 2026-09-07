@@ -5,7 +5,8 @@ import { z } from "zod";
 import dotenv from "dotenv";
 
 // quiet: dotenv v17 otherwise prints an "injected env" banner on stdout at import time (breaks --json CLIs).
-dotenv.config({ quiet: true });
+// Skipped under vitest so a populated .env on a developer's or operator's machine cannot change test results.
+if (!process.env.VITEST) dotenv.config({ quiet: true });
 
 /* ------------------------------------------------------------------ */
 /* Environment (static, read once at boot)                             */
@@ -83,6 +84,24 @@ export const env = {
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
 
+/**
+ * Tools the assistant may never call. `_delete_` (not `__delete_`) also catches vendor-prefixed
+ * names such as `sumit__sumit_crm_delete_entity`; the SUMIT money-moving/removal tools are
+ * listed explicitly because their names carry no delete verb.
+ */
+export const DEFAULT_BLOCKED_TOOLS = [
+  "_delete_",
+  "hangup_all_active_calls",
+  "clear_campaign_entries",
+  "transfer_units",
+  "bulk_update_contacts",
+  "merge_pull_request",
+  "create_repository",
+  "sumit_(documents|recurring)_cancel",
+  "sumit_payments_refund",
+  "sumit_(permissions|payment_methods)_remove",
+] as const;
+
 export const SettingsSchema = z.object({
   model: z.string().min(1).default(process.env.BOT_MODEL || "claude-opus-5"),
   effort: z.enum(EFFORT_LEVELS).default((process.env.BOT_EFFORT as Effort) || "medium"),
@@ -113,15 +132,7 @@ export const SettingsSchema = z.object({
   maxPinAttempts: z.number().int().min(1).max(10).default(3),
   confirmWrites: z.boolean().default(envBool("CONFIRM_WRITE_ACTIONS", true)),
   /** Regex patterns (matched against the full tool name) that are never callable from the phone. */
-  blockedTools: z.array(z.string()).default([
-    "__delete_",
-    "hangup_all_active_calls",
-    "clear_campaign_entries",
-    "transfer_units",
-    "bulk_update_contacts",
-    "merge_pull_request",
-    "create_repository",
-  ]),
+  blockedTools: z.array(z.string()).default([...DEFAULT_BLOCKED_TOOLS]),
   sttMaxSeconds: z.number().int().min(1).max(10).default(envInt("STT_MAX_SECONDS", 10)),
   /** Every turn adds ~1 KB to the query string the PBX re-sends; 150 turns stay far below the 512 KB header budget. */
   maxTurns: z.number().int().min(1).max(150).default(60),
@@ -169,6 +180,22 @@ export class SettingsStore {
     }
     const parsed = SettingsSchema.safeParse(stored);
     this.settings = parsed.success ? parsed.data : SettingsSchema.parse({});
+    // Older settings files stored the narrower "__delete_" pattern; widen it in place.
+    if (this.settings.blockedTools.includes("__delete_")) {
+      this.settings = { ...this.settings, blockedTools: this.settings.blockedTools.map((p) => (p === "__delete_" ? "_delete_" : p)) };
+      try {
+        this.persist();
+      } catch {
+        /* read-only data dir: keep the migrated list in memory */
+      }
+    }
+  }
+
+  private persist(): void {
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    const tmp = `${this.file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(this.settings, null, 2), "utf8");
+    fs.renameSync(tmp, this.file);
   }
 
   get(): Settings {
@@ -184,11 +211,12 @@ export class SettingsStore {
     const merged: Record<string, unknown> = { ...this.settings, ...rest };
     if (pin !== undefined) merged.pinHash = pin ? sha256(pin) : "";
     if (Array.isArray(merged.allowedPhones)) {
-      merged.allowedPhones = (merged.allowedPhones as string[]).map((p) => p.trim()).filter(Boolean);
+      // Only real numbers (or "*") are kept: a label such as "בעל העסק" normalises to "" and
+      // would otherwise match a withheld caller-ID.
+      merged.allowedPhones = (merged.allowedPhones as string[]).map((p) => p.trim()).filter((p) => p === "*" || normalizePhone(p).length > 0);
     }
     this.settings = SettingsSchema.parse(merged);
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    fs.writeFileSync(this.file, JSON.stringify(this.settings, null, 2), "utf8");
+    this.persist();
     for (const fn of this.listeners) fn(this.settings);
     return this.settings;
   }
@@ -216,5 +244,7 @@ export function isPhoneAllowed(phone: string, allowed: string[]): boolean {
   if (allowed.length === 0) return false;
   if (allowed.includes("*")) return true;
   const p = normalizePhone(phone);
-  return allowed.some((a) => normalizePhone(a) === p);
+  // A withheld / missing caller-ID never matches, and neither does a list entry without digits.
+  if (!p) return false;
+  return allowed.some((a) => a !== "*" && normalizePhone(a) === p);
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { classifyTool, hasServerSideConfirmation, isBlocked, ConfirmationGate } from "../src/mcp/tool-policy.js";
+import { classifyTool, hasServerSideConfirmation, isHandshakePreview, isBlocked, ConfirmationGate } from "../src/mcp/tool-policy.js";
+import { DEFAULT_BLOCKED_TOOLS } from "../src/config.js";
 
 describe("classifyTool", () => {
   it("trusts readOnlyHint / destructiveHint annotations over the name", () => {
@@ -70,6 +71,33 @@ describe("isBlocked", () => {
   it("ignores empty patterns and empty lists", () => {
     expect(isBlocked("crm__get_contact", [])).toBe(false);
     expect(isBlocked("crm__get_contact", ["", ""])).toBe(false);
+  });
+
+  it("default patterns cover vendor-prefixed deletes and the SUMIT money-moving tools", () => {
+    const defaults = [...DEFAULT_BLOCKED_TOOLS];
+    for (const name of ["crm__delete_contact", "clicker__delete_game", "sumit__sumit_crm_delete_entity", "sumit__sumit_documents_cancel", "sumit__sumit_recurring_cancel", "sumit__sumit_payments_refund", "sumit__sumit_permissions_remove", "sumit__sumit_payment_methods_remove", "yemot__hangup_all_active_calls"]) {
+      expect(isBlocked(name, defaults), name).toBe(true);
+    }
+    for (const name of ["sumit__sumit_documents_list", "sumit__sumit_payments_charge", "sumit__sumit_customers_create", "crm__list_contacts", "crm__send_whatsapp"]) {
+      expect(isBlocked(name, defaults), name).toBe(false);
+    }
+  });
+});
+
+describe("isHandshakePreview", () => {
+  const boolTool = { name: "send_sms", inputSchema: { properties: { to: {}, text: {}, confirm: { type: "boolean" } } } };
+  const tokenTool = { name: "delete_game", inputSchema: { properties: { id: {}, confirmation_token: { type: "string" } } } };
+
+  it("is true only for the preview step", () => {
+    expect(isHandshakePreview(boolTool, { to: "x" })).toBe(true);
+    expect(isHandshakePreview(boolTool, { to: "x", confirm: false })).toBe(true);
+    expect(isHandshakePreview(boolTool, { to: "x", confirm: true })).toBe(false);
+    expect(isHandshakePreview(boolTool, { to: "x", confirm: "true" })).toBe(false);
+    expect(isHandshakePreview(boolTool, { to: "x", confirm: "yes" })).toBe(false);
+    expect(isHandshakePreview(tokenTool, { id: "g1" })).toBe(true);
+    expect(isHandshakePreview(tokenTool, { id: "g1", confirmation_token: "" })).toBe(true);
+    expect(isHandshakePreview(tokenTool, { id: "g1", confirmation_token: "tok_123" })).toBe(false);
+    expect(isHandshakePreview({ name: "send_whatsapp", inputSchema: { properties: { to: {} } } }, { to: "x" })).toBe(false);
   });
 });
 
@@ -210,5 +238,32 @@ describe("ConfirmationGate", () => {
     const gate = new ConfirmationGate({ confirmWrites: true, blockedTools: [] });
     const twoStep = { name: "send_sms", inputSchema: { properties: { to: {}, confirm: { type: "boolean" } } } };
     expect(gate.check(twoStep, "yemot__send_sms", { to: "x", confirm: false }, 1)).toEqual({ allowed: true });
+  });
+
+  it("gates the executing step of a server-side handshake like any other write", () => {
+    const gate = new ConfirmationGate({ confirmWrites: true, blockedTools: [] });
+    const twoStep = { name: "send_sms", inputSchema: { properties: { to: {}, confirm: { type: "boolean" } } } };
+    // preview passes, confirm:true on the same turn does not
+    expect(gate.check(twoStep, "yemot__send_sms", { to: "x" }, 1).allowed).toBe(true);
+    const first = gate.check(twoStep, "yemot__send_sms", { to: "x", confirm: true }, 1);
+    expect(first).toMatchObject({ allowed: false, reason: "confirmation_required" });
+    expect(gate.check(twoStep, "yemot__send_sms", { to: "x", confirm: true }, 1).allowed).toBe(false);
+    // the caller said yes in the next turn
+    expect(gate.check(twoStep, "yemot__send_sms", { to: "x", confirm: true }, 2)).toEqual({ allowed: true });
+    // token handshakes behave the same
+    const tokenTool = { name: "delete_game", inputSchema: { properties: { id: {}, confirmation_token: {} } } };
+    expect(gate.check(tokenTool, "clicker__delete_game", { id: "g1" }, 3).allowed).toBe(true);
+    expect(gate.check(tokenTool, "clicker__delete_game", { id: "g1", confirmation_token: "t" }, 3).allowed).toBe(false);
+    expect(gate.check(tokenTool, "clicker__delete_game", { id: "g1", confirmation_token: "t" }, 4).allowed).toBe(true);
+  });
+
+  it("reads live options when given a function", () => {
+    let opts = { confirmWrites: false, blockedTools: [] as string[] };
+    const gate = new ConfirmationGate(() => opts);
+    expect(gate.check(write, "crm__send_whatsapp", args, 1)).toEqual({ allowed: true });
+    opts = { confirmWrites: true, blockedTools: ["send_whatsapp"] };
+    expect(gate.check(write, "crm__send_whatsapp", args, 2)).toMatchObject({ allowed: false, reason: "blocked" });
+    opts = { confirmWrites: true, blockedTools: [] };
+    expect(gate.check(write, "crm__send_whatsapp", args, 3)).toMatchObject({ allowed: false, reason: "confirmation_required" });
   });
 });

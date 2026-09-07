@@ -116,11 +116,22 @@ function addTokens(a: TokenCounts, b: TokenCounts): void {
  * Append-only JSONL usage log kept fully in memory (a phone assistant produces a few
  * hundred events per day at most). One file per month keeps it easy to archive.
  */
+export interface UsageStoreOptions {
+  /** Called (at most once every few minutes) when appending to the log file fails, e.g. a full disk. */
+  onWriteError?: (err: Error) => void;
+}
+
+const WRITE_ERROR_REPORT_INTERVAL_MS = 5 * 60_000;
+
 export class UsageStore {
   private events: UsageEvent[] = [];
   private readonly dir: string;
+  private lastWriteErrorAt = 0;
 
-  constructor(dataDir: string) {
+  constructor(
+    dataDir: string,
+    private readonly opts: UsageStoreOptions = {},
+  ) {
     this.dir = path.join(dataDir, "usage");
     fs.mkdirSync(this.dir, { recursive: true });
     for (const f of fs.readdirSync(this.dir).filter((f) => f.endsWith(".jsonl")).sort()) {
@@ -140,9 +151,18 @@ export class UsageStore {
     return path.join(this.dir, `${ts.slice(0, 7)}.jsonl`);
   }
 
+  /** Keeps the event in memory even when the disk write fails: a full disk must never turn a delivered answer into an error. */
   record(event: UsageEvent): void {
     this.events.push(event);
-    fs.appendFileSync(this.fileFor(event.ts), JSON.stringify(event) + "\n", "utf8");
+    try {
+      fs.appendFileSync(this.fileFor(event.ts), JSON.stringify(event) + "\n", "utf8");
+    } catch (err) {
+      const now = Date.now();
+      if (now - this.lastWriteErrorAt > WRITE_ERROR_REPORT_INTERVAL_MS) {
+        this.lastWriteErrorAt = now;
+        this.opts.onWriteError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
   }
 
   recordLlm(e: Omit<LlmUsageEvent, "kind" | "ts" | "costUsd">): LlmUsageEvent {

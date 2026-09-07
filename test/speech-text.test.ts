@@ -27,7 +27,9 @@ describe("normalizeForSpeech", () => {
 
   it("expands currency, percent and ampersand symbols into words", () => {
     expect(normalizeForSpeech("המחיר 500₪")).toBe("המחיר 500 שקלים");
-    expect(normalizeForSpeech("₪200 מקדמה")).toBe("שקלים 200 מקדמה");
+    expect(normalizeForSpeech("₪200 מקדמה")).toBe("200 שקלים מקדמה");
+    expect(normalizeForSpeech("₪1,200.50 לתשלום")).toBe("1,200.50 שקלים לתשלום");
+    expect(normalizeForSpeech("$20 לחודש")).toBe("20 דולר לחודש");
     expect(normalizeForSpeech("עולה $20")).toContain("דולר");
     expect(normalizeForSpeech("5% הנחה")).toBe("5 אחוז הנחה");
     expect(normalizeForSpeech("a & b")).toBe("a ו b");

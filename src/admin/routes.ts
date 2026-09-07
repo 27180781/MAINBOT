@@ -98,10 +98,25 @@ export function registerAdminRoutes(app: FastifyInstance, d: AdminDeps): void {
     if (!ok) {
       return reply.code(401).header("WWW-Authenticate", 'Basic realm="MAINBOT admin", charset="UTF-8"').send("Unauthorized");
     }
+    reply.header("Cache-Control", "no-store");
+    // Browsers replay Basic credentials on cross-site form posts. The admin API only ever
+    // receives JSON from its own page, so anything else (a form body, an explicit cross-site
+    // fetch) is refused before it can change settings, rules or logins.
+    if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+      if (request.headers["sec-fetch-site"] === "cross-site") return reply.code(403).send({ ok: false, error: "cross-site request refused" });
+      const contentType = String(request.headers["content-type"] ?? "");
+      if (contentType && !/^application\/json\b/i.test(contentType)) return reply.code(415).send({ ok: false, error: "the admin API accepts application/json only" });
+    }
   };
 
   app.get("/admin", { preHandler: requireAuth }, async (_req, reply) => {
-    return reply.type("text/html; charset=utf-8").send(renderAdminPage());
+    return reply
+      .type("text/html; charset=utf-8")
+      .header("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'")
+      .header("X-Frame-Options", "DENY")
+      .header("X-Content-Type-Options", "nosniff")
+      .header("Referrer-Policy", "no-referrer")
+      .send(renderAdminPage());
   });
 
   app.get("/admin/api/state", { preHandler: requireAuth }, async () => {
@@ -286,10 +301,14 @@ export function registerAdminRoutes(app: FastifyInstance, d: AdminDeps): void {
   });
 
   /** Text chat with the same agent - lets the admin test tools without a phone. */
+  const chatBusy = new Map<string, Promise<unknown>>();
   app.post("/admin/api/chat", { preHandler: requireAuth }, async (request) => {
     const body = (request.body ?? {}) as { message?: string; sessionId?: string; reset?: boolean };
     const sessionId = body.sessionId || `admin-${crypto.randomUUID()}`;
-    if (body.reset) chats.delete(sessionId);
+    if (body.reset) {
+      await chatBusy.get(sessionId);
+      chats.delete(sessionId);
+    }
     let conv = chats.get(sessionId);
     if (!conv) {
       conv = d.agent.newConversation(sessionId, "admin-chat", { channel: "chat" });
@@ -298,7 +317,17 @@ export function registerAdminRoutes(app: FastifyInstance, d: AdminDeps): void {
     }
     const message = (body.message ?? "").trim();
     if (!message) return { sessionId, text: "", endCall: false };
-    const reply = await d.agent.respond(conv, message, { phone: "admin-chat", channel: "צ'אט בדיקה מממשק הניהול (טקסט)" });
+    // One turn at a time per session (a double-click must not interleave two turns in one transcript).
+    const current = conv;
+    const turn = (chatBusy.get(sessionId) ?? Promise.resolve()).then(() => d.agent.respond(current, message, { phone: "admin-chat", channel: "צ'אט בדיקה מממשק הניהול (טקסט)" }));
+    chatBusy.set(
+      sessionId,
+      turn.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    const reply = await turn;
     if (reply.endCall) chats.delete(sessionId);
     return { sessionId, ...reply };
   });
@@ -317,6 +346,8 @@ export function registerAdminRoutes(app: FastifyInstance, d: AdminDeps): void {
 
   app.get("/admin/mcp/:name/login", { preHandler: requireAuth }, async (request, reply) => {
     const { name } = request.params as { name: string };
+    // A link on another site must not be able to start (and so reset) a login.
+    if (request.headers["sec-fetch-site"] === "cross-site") return reply.redirect("/admin?login=error&message=" + encodeURIComponent("cross-site login link refused - open it from the admin page"));
     try {
       const url = await d.hub.beginLogin(name);
       return reply.redirect(url);

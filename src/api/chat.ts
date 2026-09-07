@@ -32,6 +32,8 @@ interface ChatSession {
   conv: ConversationState;
   userId: string;
   lastActivity: number;
+  /** Turns on one session run one after another: two overlapping requests would corrupt the transcript. */
+  busy: Promise<unknown>;
 }
 
 export interface ChatRequestBody {
@@ -161,18 +163,30 @@ export function registerChatApi(app: FastifyInstance, d: ChatApiDeps): ChatSessi
     if (message.length > 20_000) return reply.code(413).send({ error: "message too long (max 20000 chars)" });
     const userId = (typeof body.userId === "string" && body.userId.trim()) || "crm";
     const sessionId = typeof body.sessionId === "string" && SESSION_ID_RE.test(body.sessionId) ? body.sessionId : `chat-${crypto.randomUUID()}`;
-    if (body.reset) sessions.delete(sessionId);
+    if (body.reset) {
+      const old = sessions.get(sessionId);
+      if (old) await old.busy; // let an in-flight turn finish before its conversation is dropped
+      sessions.delete(sessionId);
+    }
 
     let session = sessions.get(sessionId);
     if (!session) {
-      session = { conv: d.agent.newConversation(sessionId, `chat:${userId}`, { channel: "chat" }), userId, lastActivity: Date.now() };
+      session = { conv: d.agent.newConversation(sessionId, `chat:${userId}`, { channel: "chat" }), userId, lastActivity: Date.now(), busy: Promise.resolve() };
       sessions.set(sessionId, session);
     }
-    const result = await d.agent.respond(session.conv, message, {
-      phone: `chat:${userId}`,
-      channel: "צ'אט טקסט (מערכת חיצונית)",
-      userName: typeof body.userName === "string" && body.userName.trim() ? body.userName.trim() : undefined,
-    });
+    const current = session;
+    const turn = current.busy.then(() =>
+      d.agent.respond(current.conv, message, {
+        phone: `chat:${userId}`,
+        channel: "צ'אט טקסט (מערכת חיצונית)",
+        userName: typeof body.userName === "string" && body.userName.trim() ? body.userName.trim() : undefined,
+      }),
+    );
+    current.busy = turn.then(
+      () => undefined,
+      () => undefined,
+    );
+    const result = await turn;
     d.logger.info({ sessionId, userId, ms: result.durationMs, tools: result.toolCalls, error: result.error }, "chat api reply");
     return {
       sessionId,

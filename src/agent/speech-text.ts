@@ -30,7 +30,10 @@ export function normalizeForSpeech(raw: string): string {
   t = t.replace(/^\s*\d+[.)]\s+/gm, "");
   t = t.replace(/\|/g, ", ");
   t = t.replace(/^[\s:,-]*$/gm, "");
-  // Symbols the engine reads badly
+  // Symbols the engine reads badly. A currency sign written before the amount (₪1,200 / $20)
+  // is spoken after it, the way Hebrew says it.
+  t = t.replace(/₪\s*(\d[\d,.]*)/g, "$1 שקלים ");
+  t = t.replace(/\$\s*(\d[\d,.]*)/g, "$1 דולר ");
   t = t.replace(/₪/g, " שקלים ");
   t = t.replace(/\$/g, " דולר ");
   t = t.replace(/%/g, " אחוז ");

@@ -46,6 +46,13 @@ describe("isPhoneAllowed", () => {
     expect(isPhoneAllowed("0501234567", ["0529999999", "0531111111"])).toBe(false);
     expect(isPhoneAllowed("", ["0501234567"])).toBe(false);
   });
+
+  it("never matches a withheld caller-ID against a label or a stray character in the list", () => {
+    expect(isPhoneAllowed("", ["0501234567", "בעל העסק"])).toBe(false);
+    expect(isPhoneAllowed("", ["+", "-"])).toBe(false);
+    expect(isPhoneAllowed("anonymous", ["x"])).toBe(false);
+    expect(isPhoneAllowed("0501234567", ["בעל העסק", "0501234567"])).toBe(true);
+  });
 });
 
 describe("SettingsStore", () => {
@@ -72,7 +79,7 @@ describe("SettingsStore", () => {
     expect(s.maxSilentTurns).toBe(2);
     expect(s.sttMaxSeconds).toBeLessThanOrEqual(10);
     expect(s.confirmWrites).toBe(true);
-    expect(s.blockedTools).toContain("__delete_");
+    expect(s.blockedTools).toContain("_delete_");
     expect(s.greeting.length).toBeGreaterThan(0);
     expect(fs.existsSync(file())).toBe(false); // nothing written until an update
   });
@@ -90,6 +97,20 @@ describe("SettingsStore", () => {
 
     const reopened = new SettingsStore(dir);
     expect(reopened.get()).toEqual(store.get());
+  });
+
+  it("drops allow-list entries that contain no digits (labels would match a withheld caller-ID)", () => {
+    const store = new SettingsStore(dir);
+    store.update({ allowedPhones: ["0501234567", "בעל העסק", "*", "  +972-52-999-9999 ", "-"] });
+    expect(store.get().allowedPhones).toEqual(["0501234567", "*", "+972-52-999-9999"]);
+  });
+
+  it("widens the legacy __delete_ block pattern when loading an older settings file", () => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file(), JSON.stringify({ blockedTools: ["__delete_", "transfer_units"] }), "utf8");
+    const store = new SettingsStore(dir);
+    expect(store.get().blockedTools).toEqual(["_delete_", "transfer_units"]);
+    expect(JSON.parse(fs.readFileSync(file(), "utf8")).blockedTools).toEqual(["_delete_", "transfer_units"]);
   });
 
   it("trims and filters the allowed phone list", () => {

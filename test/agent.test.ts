@@ -345,7 +345,7 @@ describe("VoiceAgent", () => {
   });
 
   it("refuses blocked tools with an error result", async () => {
-    expect(settings.get().blockedTools).toContain("__delete_");
+    expect(settings.get().blockedTools).toContain("_delete_");
     const agent = makeAgent();
     create
       .mockResolvedValueOnce(apiReply([toolUse("tu_d", "crm__delete_contact", { id: "1" })], "tool_use"))

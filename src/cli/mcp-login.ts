@@ -229,8 +229,8 @@ async function main(): Promise<number> {
   }
 
   if (!server.enabled) console.error(c.yellow(`שימו לב: השרת "${name}" מושבת בקונפיג (enabled=false); ההתחברות תישמר בכל זאת.`));
-  if (provider.hasTokens()) console.log(c.dim("קיימת התחברות שמורה - היא תוחלף בהתחברות חדשה."));
-  provider.invalidateCredentials("tokens");
+  if (provider.hasTokens()) console.log(c.dim("קיימת התחברות שמורה - היא תוחלף כשההתחברות החדשה תצליח."));
+  provider.prepareLogin();
   console.log(`${c.bold("התחברות ל-")}${c.bold(label)}  ${c.dim(server.url)}`);
 
   /* 1. local callback server (the redirect URI registered with the authorization server) */
@@ -282,7 +282,7 @@ async function main(): Promise<number> {
   };
   let result: "AUTHORIZED" | "REDIRECT";
   try {
-    result = await auth(provider, { serverUrl: server.url, scope });
+    result = await auth(provider.loginView(), { serverUrl: server.url, scope });
   } catch (err) {
     await callback?.close();
     console.error(c.red(`✗ לא הצלחתי להתחיל את תהליך ההתחברות מול ${server.url}: ${errorText(err)}`));
@@ -335,11 +335,13 @@ async function main(): Promise<number> {
 
       /* 4. exchange the code for tokens */
       try {
-        const exchanged = await auth(provider, { serverUrl: server.url, authorizationCode: delivery.code, scope });
+        const exchanged = await auth(provider.loginView(), { serverUrl: server.url, authorizationCode: delivery.code, scope });
         if (exchanged !== "AUTHORIZED") throw new Error(`unexpected auth result "${exchanged}"`);
       } catch (err) {
         delivery.reply?.(false, `Token exchange failed: ${errorText(err)}`);
         throw new Error(`החלפת הקוד בטוקן נכשלה (token exchange failed): ${errorText(err)}`);
+      } finally {
+        provider.consumePendingLogin();
       }
       delivery.reply?.(true, `ההתחברות ל-${label} הצליחה. אפשר לסגור את החלון ולחזור לטרמינל. (Login succeeded - you can close this window.)`);
     } else {

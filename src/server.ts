@@ -43,7 +43,7 @@ export async function buildServer() {
   if (!env.anthropicApiKey) logger.warn("ANTHROPIC_API_KEY is not set - relying on the SDK's other credential sources");
 
   const settings = new SettingsStore(env.dataDir);
-  const usage = new UsageStore(env.dataDir);
+  const usage = new UsageStore(env.dataDir, { onWriteError: (err) => logger.error({ err: err.message }, "usage log write failed - events are kept in memory only") });
   const rules = new RulesStore(env.dataDir);
   const sessions = new SessionStore(env.sessionTtlMs);
   const mcpConfig = loadMcpConfig(env.mcpConfigPath);

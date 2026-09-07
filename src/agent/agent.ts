@@ -158,7 +158,12 @@ export class VoiceAgent {
       phone,
       messages: [],
       turn: 0,
-      gate: new ConfirmationGate({ confirmWrites: s.confirmWrites, blockedTools: s.blockedTools }),
+      // Live options: blocking a tool or switching confirmations on from /admin applies to
+      // conversations that are already open (CRM chat sessions live for hours).
+      gate: new ConfirmationGate(() => {
+        const live = this.o.settings.get();
+        return { confirmWrites: live.confirmWrites, blockedTools: live.blockedTools };
+      }),
       contextSent: false,
       systemPrompt: this.getSystemPrompt(channel),
       tools: this.getTools(channel),
@@ -217,7 +222,7 @@ export class VoiceAgent {
    * Handles one caller utterance and returns the text to speak. Never throws: errors
    * become a short spoken apology so the call keeps going.
    */
-  async respond(conv: ConversationState, userText: string, ctx: Omit<CallContext, "now" | "timeZone">): Promise<AgentReply> {
+  async respond(conv: ConversationState, userText: string, ctx: Omit<CallContext, "now" | "timeZone">, opts: { signal?: AbortSignal } = {}): Promise<AgentReply> {
     const started = Date.now();
     const s = this.o.settings.get();
     conv.turn += 1;
@@ -233,6 +238,9 @@ export class VoiceAgent {
 
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), this.o.agentTimeoutMs);
+    // The caller (PBX route) aborts the turn when the call is hung up mid-answer.
+    if (opts.signal?.aborted) abort.abort();
+    else opts.signal?.addEventListener("abort", () => abort.abort(), { once: true });
     const toolCalls: string[] = [];
     let endCall = false;
     let iterations = 0;
@@ -285,6 +293,10 @@ export class VoiceAgent {
           contextRetried = true;
           this.log.warn({ callId: conv.callId }, "context window exceeded - compacting and retrying");
           await this.compact(conv, s, abort.signal);
+          // compact() folds this turn into the summary and leaves the transcript on an assistant
+          // message; put the caller's utterance back so the retry ends on a user turn (a trailing
+          // assistant message is a prefill, rejected by current models) and still carries the question.
+          conv.messages.push({ role: "user", content });
           continue;
         }
 

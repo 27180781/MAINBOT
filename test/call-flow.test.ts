@@ -374,6 +374,39 @@ describe("TechnolineCallFlow", () => {
     expect(usage.callEvents("c1").filter((e) => e.kind === "call")).toHaveLength(1);
   });
 
+  it("aborts the pending agent turn when the caller hangs up mid-answer", async () => {
+    const { agent, respond } = fakeAgent();
+    const slow = deferred<AgentReply>();
+    let seenSignal: AbortSignal | undefined;
+    respond.mockImplementation((_conv, _text, _ctx, opts?: { signal?: AbortSignal }) => {
+      seenSignal = opts?.signal;
+      return slow.promise;
+    });
+    const flow = makeFlow(agent, { longPollMs: 30 });
+    await flow.handle(pbx("c1"));
+    const filler = mods(await flow.handle(pbx("c1", { utt_1: "מה המצב?" })));
+    expect(filler[0]).toMatchObject({ type: "simpleMessage" });
+    expect(seenSignal?.aborted).toBe(false);
+    expect(await flow.handle(pbx("c1", { utt_1: "מה המצב?", PBXcallStatus: "HANGUP" }))).toEqual({});
+    expect(seenSignal?.aborted).toBe(true);
+    expect(sessions.get("c1")).toMatchObject({ ended: true, endedBy: "caller_hangup" });
+    slow.resolve(reply("מאוחר מדי"));
+    await tick();
+    expect(await flow.handle(pbx("c1", { utt_1: "מה המצב?" }))).toEqual({ type: "hangup" });
+  });
+
+  it("records calls whose HANGUP never arrived when the session store sweeps them", async () => {
+    const { agent, respond } = fakeAgent();
+    respond.mockResolvedValue(reply("שלום"));
+    const flow = makeFlow(agent);
+    await flow.handle(pbx("c1"));
+    await flow.handle(pbx("c1", { utt_1: "היי" }));
+    expect(usage.callEvents("c1").filter((e) => e.kind === "call")).toHaveLength(0);
+    expect(sessions.sweep(Date.now() + 61_000)).toBe(1);
+    expect(usage.callEvents("c1").filter((e) => e.kind === "call")).toEqual([expect.objectContaining({ endedBy: "timeout", turns: 1 })]);
+    expect(sessions.size()).toBe(0);
+  });
+
   it("ignores a HANGUP for an unknown call without creating a session", async () => {
     const { agent, newConversation } = fakeAgent();
     const flow = makeFlow(agent);
