@@ -339,7 +339,7 @@ describe("VoiceAgent", () => {
 
     const toolEvents = usage.callEvents("call-3").filter((e) => e.kind === "tool");
     expect(toolEvents).toHaveLength(2);
-    expect(toolEvents[0]).toMatchObject({ tool: "crm__send_whatsapp", blocked: true, ok: true });
+    expect(toolEvents[0]).toMatchObject({ tool: "crm__send_whatsapp", blocked: true, ok: true, reason: "confirmation_required" });
     expect(toolEvents[1]).toMatchObject({ tool: "crm__send_whatsapp", ok: true });
     expect(toolEvents[1]).not.toHaveProperty("blocked");
   });
@@ -354,6 +354,7 @@ describe("VoiceAgent", () => {
     await agent.respond(conv, "תמחק את דוד", { phone: "p" });
     expect(hubParts.callTool).not.toHaveBeenCalled();
     expect((conv.messages[2] as MessageParam).content).toEqual([expect.objectContaining({ type: "tool_result", tool_use_id: "tu_d", is_error: true, content: expect.stringMatching(/blocked/i) })]);
+    expect(usage.callEvents("c").filter((e) => e.kind === "tool")).toEqual([expect.objectContaining({ tool: "crm__delete_contact", blocked: true, reason: "blocked" })]);
   });
 
   it("answers unknown tools with an error result instead of calling the hub", async () => {
@@ -585,7 +586,7 @@ describe("VoiceAgent", () => {
     expect(gated).not.toHaveProperty("is_error");
     expect(rules.list()).toEqual([]);
     expect(agent.getSystemPrompt()).toContain("עדיין לא נשמרו כללים קבועים.");
-    expect(usage.callEvents("call-rules").filter((e) => e.kind === "tool")).toEqual([expect.objectContaining({ tool: "add_rule", server: "local", blocked: true })]);
+    expect(usage.callEvents("call-rules").filter((e) => e.kind === "tool")).toEqual([expect.objectContaining({ tool: "add_rule", server: "local", blocked: true, reason: "confirmation_required" })]);
 
     create.mockResolvedValueOnce(apiReply([{ ...add, id: "tu_r2" }], "tool_use")).mockResolvedValueOnce(apiReply([text("נשמר.")]));
     const reply = await agent.respond(conv, "כן", { phone: "0501234567" });
@@ -666,7 +667,7 @@ describe("VoiceAgent", () => {
       ]);
       expect(conv.notifications).toEqual([{ channel: "log", ok: true, detail: "נרשם ביומן (ערוץ log)" }]);
       expect(usage.notifications(5)).toEqual([expect.objectContaining({ callId: "run-2", phone: "routine:rt_2", channel: "log", ok: true, text: "יש 2 לידים חדשים: דני ורונית." })]);
-      expect(usage.callEvents("run-2").filter((e) => e.kind === "tool" && e.blocked)).toHaveLength(2);
+      expect(usage.callEvents("run-2").filter((e) => e.kind === "tool" && e.blocked).map((e) => (e as { reason?: string }).reason)).toEqual(["proactive", "proactive"]);
       assertTranscriptConsistent(conv.messages as MessageParam[]);
     });
 

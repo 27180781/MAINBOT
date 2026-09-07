@@ -1088,7 +1088,16 @@ const SCRIPT = String.raw`
           '<div class="ev turn-bot"><div class="t">עוזר · ' + fmt(e.durationMs) + ' ms</div>' + esc(e.assistantText || '') + '</div>';
       }
       if (e.kind === 'tool') {
-        var b = e.blocked ? '<span class="badge warn">נחסם</span>' : (e.ok ? '<span class="badge ok">הצליח</span>' : '<span class="badge err">נכשל</span>');
+        var b;
+        if (e.blocked) {
+          if (e.reason === 'confirmation_required') b = '<span class="badge info" title="פעולת כתיבה: נעצרה עד שהמתקשר יאשר, ואז תרוץ בקריאה החוזרת">ממתין לאישור</span>';
+          else if (e.reason === 'blocked') b = '<span class="badge warn" title="הכלי נמצא ברשימת הכלים החסומים בהגדרות">חסום (רשימת כלים חסומים)</span>';
+          else if (e.reason === 'read_only_server') b = '<span class="badge warn" title="השרת מחובר לקריאה בלבד">חסום (שרת לקריאה בלבד)</span>';
+          else if (e.reason === 'proactive') b = '<span class="badge warn" title="בהרצה יזומה אין כתיבה">חסום (הרצה יזומה)</span>';
+          else b = '<span class="badge warn">נחסם</span>';
+        } else {
+          b = e.ok ? '<span class="badge ok">הצליח</span>' : '<span class="badge err">נכשל</span>';
+        }
         return '<div class="ev tool">כלי <code>' + esc(e.tool) + '</code> ' + b + ' · ' + fmt(e.durationMs) + ' ms' + (e.server && e.server !== '?' ? ' · שרת ' + esc(e.server) : '') + '</div>';
       }
       if (e.kind === 'llm') {

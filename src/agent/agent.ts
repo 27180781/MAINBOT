@@ -367,7 +367,7 @@ export class VoiceAgent {
     }
     if (conv.mode === "proactive" && tool.kind === "write") {
       this.log.info({ callId: conv.callId, tool: fullName }, "write tool refused in proactive run");
-      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: fullName, server: tool.server, durationMs: 0, ok: true, blocked: true });
+      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: fullName, server: tool.server, durationMs: 0, ok: true, blocked: true, reason: "proactive" });
       return { text: "Write tools are not available in proactive runs (nobody is on the line to confirm). Suggest this action to the owner in your notify_owner message instead.", isError: true };
     }
     const decision = conv.gate.check(
@@ -379,7 +379,7 @@ export class VoiceAgent {
     );
     if (!decision.allowed) {
       this.log.info({ callId: conv.callId, tool: fullName, reason: decision.reason }, "tool call gated");
-      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: fullName, server: tool.server, durationMs: 0, ok: true, blocked: true });
+      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: fullName, server: tool.server, durationMs: 0, ok: true, blocked: true, reason: decision.reason });
       return { text: decision.message ?? "Not allowed.", isError: decision.reason !== "confirmation_required" };
     }
     const outcome = await this.o.hub.callTool(fullName, input, this.o.toolTimeoutMs);
@@ -392,14 +392,14 @@ export class VoiceAgent {
   private async executeLocalTool(conv: ConversationState, name: string, input: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
     const isWrite = LOCAL_WRITE_TOOLS.has(name);
     if (conv.mode === "proactive" && isWrite) {
-      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: name, server: "local", durationMs: 0, ok: true, blocked: true });
+      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: name, server: "local", durationMs: 0, ok: true, blocked: true, reason: "proactive" });
       return { text: "This tool is not available in proactive runs. Suggest the change to the owner instead.", isError: true };
     }
     // notify_owner is the one "write" a proactive run may do; it is never gated (no caller to confirm).
     const decision = name === "notify_owner" ? { allowed: true as const } : conv.gate.check({ name, annotations: { readOnlyHint: !isWrite, destructiveHint: isWrite } }, name, input, conv.turn, false);
     if (!decision.allowed) {
       this.log.info({ callId: conv.callId, tool: name, reason: decision.reason }, "local tool call gated");
-      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: name, server: "local", durationMs: 0, ok: true, blocked: true });
+      this.o.usage.recordTool({ callId: conv.callId, phone: conv.phone, tool: name, server: "local", durationMs: 0, ok: true, blocked: true, reason: decision.reason });
       return { text: decision.message ?? "Not allowed.", isError: decision.reason !== "confirmation_required" };
     }
     const started = Date.now();

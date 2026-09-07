@@ -25,6 +25,8 @@ export interface ToolUsageEvent {
   durationMs: number;
   ok: boolean;
   blocked?: boolean;
+  /** Why a blocked call did not run: waiting for the caller's yes, an admin block pattern, a read-only server, or a proactive (read-only) run. */
+  reason?: "confirmation_required" | "blocked" | "read_only_server" | "proactive";
 }
 
 export interface TurnEvent {
