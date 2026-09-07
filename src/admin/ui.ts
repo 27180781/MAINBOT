@@ -348,6 +348,30 @@ const BODY = String.raw`
   <div class="card">
     <h2>חיבור לטכנוליין</h2>
     <div class="urlbox"><code id="webhook-url">–</code><button type="button" class="btn small" id="btn-copy">העתק</button></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><h2 style="margin:0;flex:1">חיבור ל-CRM ולמערכות אחרות (Chat API)</h2><span class="chip" id="chatapi-status">–</span></div>
+    <p class="hint" style="margin:8px 0 12px">אותו עוזר כצ'אט בתוך ה-CRM ואירועים מהמערכת אל המשימות היזומות. המפתח נשמר בצד השרת של ה-CRM (Edge Function) ולא בדפדפן. מדריך: docs/CRM-INTEGRATION.md.</p>
+    <div class="grid">
+      <div class="field wide">
+        <label>כתובת הצ'אט (POST)</label>
+        <div class="urlbox"><code id="chatapi-url">–</code></div>
+      </div>
+      <div class="field wide">
+        <label>כתובת האירועים (POST)</label>
+        <div class="urlbox"><code id="chatapi-events-url">–</code></div>
+      </div>
+      <div class="field wide">
+        <label>המפתח (Bearer) – <span id="chatapi-source">–</span></label>
+        <div class="urlbox"><code id="chatapi-key" dir="ltr">••••••••</code>
+          <button type="button" class="btn small" id="btn-chatkey-reveal">הצג</button>
+          <button type="button" class="btn small" id="btn-chatkey-copy">העתק</button>
+          <button type="button" class="btn small" id="btn-chatkey-rotate" hidden>החלף מפתח</button>
+        </div>
+        <span class="hint">ב-Lovable: הכניסו את הערך לסוד בשם MAINBOT_CHAT_API_KEY. החלפת מפתח מנתקת מיד את מי שמשתמש בישן.</span>
+      </div>
+    </div>
     <p class="hint">הגדירו שלוחת API בטכנוליין עם הכתובת הזו (GET)</p>
   </div>
   <div class="card">
@@ -609,6 +633,7 @@ const SCRIPT = String.raw`
       renderActiveCalls();
       renderServers();
       $('#webhook-url').textContent = state.webhookUrl || '';
+      renderChatApi();
     } catch (e) {
       toast('טעינת המצב נכשלה: ' + e.message, 'err');
     }
@@ -878,6 +903,90 @@ const SCRIPT = String.raw`
       btn.disabled = false;
       await loadState(false);
     }
+  }
+
+  /* ------------------------------ chat API key ------------------------------ */
+
+  var chatKeyValue = null;
+
+  function renderChatApi() {
+    var c = (state && state.chatApi) || {};
+    $('#chatapi-status').textContent = c.enabled ? 'פעיל' : 'כבוי';
+    $('#chatapi-url').textContent = c.chatUrl || '–';
+    $('#chatapi-events-url').textContent = c.eventsUrl || '–';
+    $('#chatapi-source').textContent = c.source === 'env' ? 'מוגדר במשתני הסביבה (CHAT_API_KEY)' : 'נוצר אוטומטית על ידי השרת';
+    $('#btn-chatkey-rotate').hidden = !c.canRotate;
+    if (chatKeyValue === null) $('#chatapi-key').textContent = c.keyHint ? c.keyHint : '••••••••';
+  }
+
+  async function fetchChatKey() {
+    if (chatKeyValue !== null) return chatKeyValue;
+    var r = await api('GET', '/admin/api/chat-key');
+    chatKeyValue = (r && r.key) || '';
+    return chatKeyValue;
+  }
+
+  async function revealChatKey() {
+    try {
+      var key = await fetchChatKey();
+      var el = $('#chatapi-key');
+      var btn = $('#btn-chatkey-reveal');
+      if (el.getAttribute('data-shown') === '1') {
+        el.textContent = ((state && state.chatApi && state.chatApi.keyHint) || '••••••••');
+        el.removeAttribute('data-shown');
+        btn.textContent = 'הצג';
+      } else {
+        el.textContent = key || '(אין מפתח)';
+        el.setAttribute('data-shown', '1');
+        btn.textContent = 'הסתר';
+      }
+    } catch (e) {
+      toast('טעינת המפתח נכשלה: ' + e.message, 'err');
+    }
+  }
+
+  async function copyChatKey() {
+    try {
+      var key = await fetchChatKey();
+      if (!key) throw new Error('אין מפתח');
+      await copyText(key);
+      toast('המפתח הועתק', 'ok');
+    } catch (e) {
+      toast('ההעתקה נכשלה: ' + e.message, 'err');
+    }
+  }
+
+  async function rotateChatKey() {
+    if (!window.confirm('להחליף את המפתח? ה-CRM וכל מערכת אחרת שמשתמשת במפתח הישן יפסיקו לעבוד עד שיעודכנו.')) return;
+    try {
+      var r = await api('POST', '/admin/api/chat-key/rotate', {});
+      chatKeyValue = (r && r.key) || '';
+      if (state) state.chatApi = r;
+      $('#chatapi-key').textContent = chatKeyValue;
+      $('#chatapi-key').setAttribute('data-shown', '1');
+      $('#btn-chatkey-reveal').textContent = 'הסתר';
+      renderChatApi();
+      toast('נוצר מפתח חדש – עדכנו אותו ב-CRM', 'ok');
+    } catch (e) {
+      toast('ההחלפה נכשלה: ' + e.message, 'err');
+    }
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (!ok) throw new Error('copy failed');
   }
 
   async function copyWebhook() {
@@ -1465,6 +1574,9 @@ const SCRIPT = String.raw`
     $('#f-model').addEventListener('change', modelHint);
     $('#btn-clear-pin').addEventListener('click', clearPin);
     $('#btn-copy').addEventListener('click', copyWebhook);
+    $('#btn-chatkey-reveal').addEventListener('click', revealChatKey);
+    $('#btn-chatkey-copy').addEventListener('click', copyChatKey);
+    $('#btn-chatkey-rotate').addEventListener('click', rotateChatKey);
     $('#servers').addEventListener('click', serverAction);
     $$('#usage-ranges button').forEach(function (b) {
       b.addEventListener('click', function () { usageRange = b.getAttribute('data-range') || 'all'; loadUsage(); });

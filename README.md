@@ -254,7 +254,7 @@ curl -s "https://<host>/pbx/technoline/<WEBHOOK_SECRET>?PBXphone=0501234567&PBXc
 
 ## אותו עוזר בתוך ה-CRM (Chat API)
 
-המנוע זמין גם כצ'אט טקסט למערכות אחרות, למשל במקום העוזר המובנה ב-CRM: `POST /api/v1/chat` עם `Authorization: Bearer <CHAT_API_KEY>` וגוף `{ "message": "...", "sessionId": "...", "userName": "..." }` מחזיר `{ "text": "...", "toolCalls": [...] }`. אותם כלים, אותם כללים קבועים ואותו אישור לפני פעולות; הפרומפט מותאם לצ'אט (עיצוב קל מותר). מדריך מלא עם דוגמת Edge Function ל-Supabase: [docs/CRM-INTEGRATION.md](docs/CRM-INTEGRATION.md).
+המנוע זמין גם כצ'אט טקסט למערכות אחרות, וזה מה שמאחורי דף "עוזר AI ניהולי" ב-CRM של חוויה בקליק: `POST /api/v1/chat` עם `Authorization: Bearer <מפתח>` וגוף `{ "message": "...", "sessionId": "...", "userName": "...", "history": [...] }` מחזיר `{ "text": "...", "toolCalls": [...], "newSession": false }`. אותם כלים, אותם כללים קבועים ואותו אישור לפני פעולות; הפרומפט מותאם לצ'אט (עיצוב קל מותר). את המפתח השרת מייצר בעצמו ומציג ב-`/admin` → "חיבורים" (או `CHAT_API_KEY` ידני). מדריך מלא: [docs/CRM-INTEGRATION.md](docs/CRM-INTEGRATION.md).
 
 ## משימות יזומות – העוזר פונה אליכם
 

@@ -17,6 +17,7 @@ import { registerChatApi } from "./api/chat.js";
 import { RoutineStore } from "./routines/store.js";
 import { Notifier } from "./routines/notify.js";
 import { RoutineRunner } from "./routines/runner.js";
+import { SecretsStore } from "./secrets.js";
 
 /** 3 seconds of 8 kHz 16-bit mono silence, served as a filler when FILLER_MODE=silence. */
 export function silenceWav(seconds = 3, sampleRate = 8000): Buffer {
@@ -43,6 +44,12 @@ export async function buildServer() {
   if (!env.anthropicApiKey) logger.warn("ANTHROPIC_API_KEY is not set - relying on the SDK's other credential sources");
 
   const settings = new SettingsStore(env.dataDir);
+  const secrets = new SecretsStore(env.dataDir);
+  // The Chat API key the CRM uses: CHAT_API_KEY when set, otherwise one generated here and
+  // shown in /admin, so no manual secret juggling is needed to connect the CRM.
+  const chatApi = env.chatApiKey
+    ? { key: () => env.chatApiKey, source: "env" as const }
+    : { key: () => secrets.getOrCreate("chatApiKey"), source: "generated" as const, rotate: () => secrets.rotate("chatApiKey") };
   const usage = new UsageStore(env.dataDir, { onWriteError: (err) => logger.error({ err: err.message }, "usage log write failed - events are kept in memory only") });
   const rules = new RulesStore(env.dataDir);
   const sessions = new SessionStore(env.sessionTtlMs);
@@ -135,6 +142,7 @@ export async function buildServer() {
     routines,
     runner,
     notifier,
+    chatApi,
     logger,
     adminUser: env.adminUser,
     adminPassword: env.adminPassword,
@@ -191,7 +199,7 @@ export async function buildServer() {
     agent,
     runner,
     logger,
-    apiKey: env.chatApiKey,
+    apiKey: chatApi.key,
     corsOrigins: env.chatCorsOrigins,
     sessionTtlMs: env.chatSessionTtlMs,
   });
@@ -208,7 +216,7 @@ export async function buildServer() {
     await hub.stop();
   });
 
-  return { app, hub, agent, settings, usage, rules, routines, runner, notifier, sessions, chatSessions, flow };
+  return { app, hub, agent, settings, usage, rules, routines, runner, notifier, sessions, chatSessions, chatApi, flow };
 }
 
 async function main(): Promise<void> {

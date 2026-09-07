@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import Fastify from "fastify";
-import { registerChatApi } from "../src/api/chat.js";
+import { registerChatApi, normalizeHistory } from "../src/api/chat.js";
 import type { VoiceAgent, ConversationState, AgentReply } from "../src/agent/agent.js";
 import type { RoutineRunner } from "../src/routines/runner.js";
 import type { Logger } from "../src/logger.js";
@@ -59,6 +59,46 @@ describe("chat API", () => {
     const preflight = await app.inject({ method: "OPTIONS", url: "/api/v1/events", headers: { origin: "https://crm.example.com" } });
     expect(preflight.statusCode).toBe(204);
     expect(preflight.headers["access-control-allow-origin"]).toBe("https://crm.example.com");
+  });
+
+  it("seeds a new session from the caller's history and reports newSession", async () => {
+    const headers = { authorization: `Bearer ${KEY}` };
+    const history = [
+      { role: "user", content: "מי הלקוח האחרון?" },
+      { role: "assistant", content: "דני כהן." },
+      { role: "assistant", content: "" },
+      { role: "user", content: "ומה הטלפון שלו?" },
+    ];
+    const first = await app.inject({ method: "POST", url: "/api/v1/chat", headers, payload: { message: "תודה", sessionId: "crm:u:hist", history } });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().newSession).toBe(true);
+    const conv = parts.newConversation.mock.results.at(-1)!.value as ConversationState;
+    // the trailing unanswered user turn was dropped so the new message follows an assistant turn
+    expect(conv.messages.slice(0, 2)).toEqual([
+      { role: "user", content: "מי הלקוח האחרון?" },
+      { role: "assistant", content: "דני כהן." },
+    ]);
+    const second = await app.inject({ method: "POST", url: "/api/v1/chat", headers, payload: { message: "עוד", sessionId: "crm:u:hist", history } });
+    expect(second.json().newSession).toBe(false);
+    expect(parts.newConversation.mock.calls.filter((c) => c[0] === "crm:u:hist")).toHaveLength(1);
+  });
+
+  it("reads the key through a getter so rotation applies immediately", async () => {
+    let key = "first-key-0123456789abcdef";
+    const rotating = Fastify();
+    registerChatApi(rotating, { agent: parts.agent, logger: fakeLogger(), apiKey: () => key, corsOrigins: [], sessionTtlMs: 60_000 });
+    await rotating.ready();
+    try {
+      expect((await rotating.inject({ method: "POST", url: "/api/v1/chat", headers: { authorization: `Bearer ${key}` }, payload: { message: "היי" } })).statusCode).toBe(200);
+      const old = key;
+      key = "second-key-0123456789abcdef";
+      expect((await rotating.inject({ method: "POST", url: "/api/v1/chat", headers: { authorization: `Bearer ${old}` }, payload: { message: "היי" } })).statusCode).toBe(401);
+      expect((await rotating.inject({ method: "POST", url: "/api/v1/chat", headers: { authorization: `Bearer ${key}` }, payload: { message: "היי" } })).statusCode).toBe(200);
+      key = "";
+      expect((await rotating.inject({ method: "GET", url: "/api/v1/health" })).json().enabled).toBe(false);
+    } finally {
+      await rotating.close();
+    }
   });
 
   it("answers 503 for events when no runner is configured", async () => {
@@ -167,5 +207,40 @@ describe("chat API without a key", () => {
     const res = await app.inject({ method: "POST", url: "/api/v1/chat", headers: { authorization: "Bearer x" }, payload: { message: "שלום" } });
     expect(res.statusCode).toBe(503);
     await app.close();
+  });
+});
+
+describe("normalizeHistory", () => {
+  it("keeps only clean alternating user/assistant text turns", () => {
+    expect(normalizeHistory(undefined)).toEqual([]);
+    expect(normalizeHistory("nope")).toEqual([]);
+    expect(
+      normalizeHistory([
+        { role: "assistant", content: "פתיחה שלא תישמר" },
+        { role: "user", content: " שאלה " },
+        { role: "tool", content: "x" },
+        { role: "user", content: "המשך" },
+        { role: "assistant", content: "תשובה" },
+        { role: "assistant", content: 42 },
+        { role: "user", content: "   " },
+        { role: "user", content: "ללא תשובה" },
+      ]),
+    ).toEqual([
+      { role: "user", content: "שאלה\nהמשך" },
+      { role: "assistant", content: "תשובה" },
+    ]);
+  });
+
+  it("caps the number of turns and the total size, keeping the newest", () => {
+    const many = Array.from({ length: 100 }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content: `t${i}` }));
+    const out = normalizeHistory(many);
+    expect(out).toHaveLength(40);
+    expect(out[0]).toEqual({ role: "user", content: "t60" });
+    expect(out.at(-1)).toEqual({ role: "assistant", content: "t99" });
+    const big = Array.from({ length: 20 }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", content: (i % 2 === 0 ? "u" : "a").repeat(7000) }));
+    const trimmed = normalizeHistory(big);
+    expect(trimmed.length).toBeLessThan(20);
+    expect(trimmed[0]!.role).toBe("user");
+    expect(trimmed.reduce((n, t) => n + t.content.length, 0)).toBeLessThanOrEqual(60_000);
   });
 });

@@ -26,6 +26,8 @@ export interface AdminDeps {
   routines?: RoutineStore;
   runner?: RoutineRunner;
   notifier?: Notifier;
+  /** The Chat API key handed to external systems (CRM): where it comes from and how to rotate it. */
+  chatApi?: { key: () => string; source: "env" | "generated"; rotate?: () => string };
   logger: Logger;
   adminUser: string;
   adminPassword: string;
@@ -134,7 +136,31 @@ export function registerAdminRoutes(app: FastifyInstance, d: AdminDeps): void {
       toolCount: tools.length,
       routines: listRoutines(),
       notifyChannels: NOTIFY_CHANNELS,
+      chatApi: chatApiInfo(),
     };
+  });
+
+  /* ---- Chat API key for the CRM / other systems ---- */
+  function chatApiInfo() {
+    const base = d.publicBaseUrl || "https://<your-domain>";
+    const key = d.chatApi?.key() ?? "";
+    return {
+      enabled: key.length >= 16,
+      source: d.chatApi?.source ?? "env",
+      canRotate: !!d.chatApi?.rotate,
+      chatUrl: `${base}/api/v1/chat`,
+      eventsUrl: `${base}/api/v1/events`,
+      keyHint: key ? `${key.slice(0, 4)}…${key.slice(-4)}` : "",
+    };
+  }
+
+  app.get("/admin/api/chat-key", { preHandler: requireAuth }, async () => ({ ...chatApiInfo(), key: d.chatApi?.key() ?? "" }));
+
+  app.post("/admin/api/chat-key/rotate", { preHandler: requireAuth }, async (_req, reply) => {
+    if (!d.chatApi?.rotate) return reply.code(409).send({ ok: false, error: "the key comes from CHAT_API_KEY in the environment - change it there" });
+    const key = d.chatApi.rotate();
+    d.logger.warn("chat API key rotated from the admin UI - external systems must be updated");
+    return { ok: true, ...chatApiInfo(), key };
   });
 
   /* ---- Proactive routines ---- */

@@ -217,6 +217,30 @@ describe("buildServer", () => {
     expect(server.routines.list()).toEqual([]);
   });
 
+  it("generates a chat API key when none is configured and lets the admin read and rotate it", async () => {
+    const state = await server.app.inject({ method: "GET", url: "/admin/api/state", headers: { authorization: AUTH } });
+    expect(state.json().chatApi).toMatchObject({ enabled: true, source: "generated", canRotate: true, chatUrl: "https://bot.example.com/api/v1/chat", eventsUrl: "https://bot.example.com/api/v1/events" });
+    expect(state.json().chatApi.keyHint).toMatch(/^.{4}….{4}$/);
+    expect(JSON.stringify(state.json())).not.toContain(server.chatApi.key());
+
+    const keyRes = await server.app.inject({ method: "GET", url: "/admin/api/chat-key", headers: { authorization: AUTH } });
+    const key = keyRes.json().key as string;
+    expect(key).toHaveLength(48);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "secrets.json"), "utf8")).chatApiKey).toBe(key);
+    if (process.platform !== "win32") expect(fs.statSync(path.join(dir, "secrets.json")).mode & 0o777).toBe(0o600);
+
+    // The generated key opens the chat API (the agent call itself needs a real model, so only auth is checked here).
+    expect((await server.app.inject({ method: "GET", url: "/api/v1/health" })).json().enabled).toBe(true);
+    expect((await server.app.inject({ method: "POST", url: "/api/v1/chat", headers: { authorization: "Bearer wrong" }, payload: { message: "x" } })).statusCode).toBe(401);
+
+    const rotated = await server.app.inject({ method: "POST", url: "/admin/api/chat-key/rotate", headers: { authorization: AUTH }, payload: {} });
+    expect(rotated.statusCode).toBe(200);
+    expect(rotated.json().key).toHaveLength(48);
+    expect(rotated.json().key).not.toBe(key);
+    expect(server.chatApi.key()).toBe(rotated.json().key);
+    expect((await server.app.inject({ method: "POST", url: "/api/v1/chat", headers: { authorization: `Bearer ${key}` }, payload: { message: "x" } })).statusCode).toBe(401);
+  });
+
   it("refuses cross-site and form-encoded requests to the admin API (CSRF)", async () => {
     // A cross-site form post replays the browser's Basic credentials but cannot send JSON.
     const form = await server.app.inject({ method: "POST", url: "/admin/api/rules", headers: { authorization: AUTH, "content-type": "application/x-www-form-urlencoded" }, payload: "text=evil" });

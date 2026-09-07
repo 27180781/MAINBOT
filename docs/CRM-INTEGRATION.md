@@ -19,6 +19,7 @@ Content-Type: application/json
 | `userId` | לא | מזהה המשתמש ב-CRM (לרישום השימוש ולזיהוי בפרומפט) |
 | `userName` | לא | שם תצוגה של המשתמש ("נסים") |
 | `reset` | לא | `true` מתחיל שיחה חדשה באותו `sessionId` |
+| `history` | לא | עד 40 הודעות קודמות `{ role: "user" \| "assistant", content }` מהשרשור שה-CRM שומר. הבוט משתמש בהן רק כשאין לו שיחה חיה ל-`sessionId` הזה (אחרי הפעלה מחדש או אחרי שעתיים ללא פעילות), כדי להמשיך מאותו הקשר |
 
 תשובה:
 
@@ -28,9 +29,12 @@ Content-Type: application/json
   "text": "יש 3 פניות שלא נענו: ...",
   "toolCalls": ["crm__list_unanswered"],
   "iterations": 2,
-  "durationMs": 4180
+  "durationMs": 4180,
+  "newSession": false
 }
 ```
+
+`newSession` הוא `true` כשהבוט פתח שיחה חדשה ל-`sessionId` (ואז `history`, אם נשלח, נטען לתוכה).
 
 `text` הוא הטקסט להצגה (עברית, ייתכן markdown קל). `toolCalls` הם הכלים שהופעלו (שימושי להצגת "בודק ב-CRM..."). כשמשהו נכשל מופיע גם `error` (טקסט טכני), אבל `text` תמיד מכיל משפט ידידותי להצגה.
 
@@ -44,7 +48,7 @@ Content-Type: application/json
 
 ## הגדרה בצד הבוט
 
-ב-CapRover (או ב-`.env`):
+לא צריך להמציא מפתח: אם `CHAT_API_KEY` לא מוגדר, השרת מייצר מפתח אקראי בעצמו (נשמר ב-`data/secrets.json`) ומציג אותו ב-`/admin` → "חיבורים" → "חיבור ל-CRM ולמערכות אחרות", עם כפתורי הצג / העתק / החלף מפתח. אם מעדיפים לקבוע אותו ידנית, ב-CapRover (או ב-`.env`):
 
 ```
 CHAT_API_KEY=<מחרוזת אקראית של 32 תווים לפחות, למשל openssl rand -hex 24>
@@ -57,6 +61,10 @@ CHAT_CORS_ORIGINS=https://crm.example.com
 ```
 
 הדרך המומלצת: הפרונט של ה-CRM קורא ל-Edge Function שלו, וה-Edge Function קורא לבוט עם המפתח (המפתח נשאר בשרת).
+
+## החיבור שבוצע ב-CRM של חוויה בקליק
+
+ב-CRM (פרויקט Lovable `click-connect-crm`) ה-Edge Function `assistant-chat` – זו שמאחורי דף "עוזר AI ניהולי" – מנתבת ל-MAINBOT כשקיימים שני הסודות `MAINBOT_URL` ו-`MAINBOT_CHAT_API_KEY`, ואחרת ממשיכה עם המנוע המובנה. היא שולחת `sessionId = crm:<user_id>:<thread_id>`, את שם המשתמש, ואת ההודעות הקודמות של השרשור כ-`history`; התשובה נשמרת בטבלת ההודעות של ה-CRM כרגיל, והכלים שהופעלו מופיעים כבועת "כלי" מתקפלת. בדף עצמו מופיע תג "MAINBOT" כשהתשובה הגיעה מהבוט. את המפתח מכניסים ב-Lovable (ניהול סודות של הפרויקט) בשם `MAINBOT_CHAT_API_KEY`, אחרי שמעתיקים אותו מ-`/admin`.
 
 ## דוגמה: Supabase Edge Function (Deno)
 

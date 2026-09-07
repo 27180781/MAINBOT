@@ -10,8 +10,10 @@ import type { RoutineRunner } from "../routines/runner.js";
  * with a chat-flavoured prompt. Authenticated with a bearer key that stays server-side
  * (call it from a backend / edge function, not from the browser).
  *
- *   POST /api/v1/chat   { message, sessionId?, userId?, userName?, reset? }
- *   -> { sessionId, text, toolCalls, iterations, durationMs, error? }
+ *   POST /api/v1/chat   { message, sessionId?, userId?, userName?, reset?, history? }
+ *   -> { sessionId, text, toolCalls, iterations, durationMs, newSession, error? }
+ *   `history` (earlier user/assistant turns kept by the caller) seeds a session the server
+ *   does not have yet - after a restart or the session TTL - and is ignored otherwise.
  *   DELETE /api/v1/chat/:sessionId
  *   GET /api/v1/health
  *   POST /api/v1/events { type, payload? }  -> runs the proactive routines subscribed to that event type
@@ -21,7 +23,8 @@ export interface ChatApiDeps {
   /** Optional: enables POST /api/v1/events (event-driven routines). */
   runner?: RoutineRunner;
   logger: Logger;
-  apiKey: string;
+  /** Bearer key, or a getter so a rotated key applies without a restart. */
+  apiKey: string | (() => string);
   /** Allowed browser origins for CORS; empty = no CORS headers (backend-to-backend only). */
   corsOrigins: string[];
   sessionTtlMs: number;
@@ -42,9 +45,48 @@ export interface ChatRequestBody {
   userId?: string;
   userName?: string;
   reset?: boolean;
+  history?: unknown;
+}
+
+export interface HistoryTurn {
+  role: "user" | "assistant";
+  content: string;
 }
 
 const SESSION_ID_RE = /^[A-Za-z0-9_.:@-]{1,128}$/;
+export const MAX_HISTORY_TURNS = 40;
+const MAX_HISTORY_TURN_CHARS = 8_000;
+const MAX_HISTORY_CHARS = 60_000;
+
+/**
+ * Turns caller-supplied history into a transcript the model accepts: user/assistant only,
+ * non-empty text, consecutive same-role turns merged, starting on a user turn and ending on
+ * an assistant turn (the new message follows), newest turns kept when the cap is exceeded.
+ */
+export function normalizeHistory(raw: unknown): HistoryTurn[] {
+  if (!Array.isArray(raw)) return [];
+  const turns: HistoryTurn[] = [];
+  for (const item of raw.slice(-MAX_HISTORY_TURNS * 2)) {
+    if (!item || typeof item !== "object") continue;
+    const { role, content } = item as { role?: unknown; content?: unknown };
+    if ((role !== "user" && role !== "assistant") || typeof content !== "string") continue;
+    const text = content.trim().slice(0, MAX_HISTORY_TURN_CHARS);
+    if (!text) continue;
+    const last = turns[turns.length - 1];
+    if (last && last.role === role) last.content = `${last.content}\n${text}`;
+    else turns.push({ role, content: text });
+  }
+  while (turns.length && turns[0]!.role !== "user") turns.shift();
+  while (turns.length && turns[turns.length - 1]!.role !== "assistant") turns.pop();
+  let out = turns.slice(-MAX_HISTORY_TURNS);
+  while (out.length && out[0]!.role !== "user") out.shift();
+  let total = out.reduce((n, t) => n + t.content.length, 0);
+  while (out.length > 2 && total > MAX_HISTORY_CHARS) {
+    total -= out[0]!.content.length + out[1]!.content.length;
+    out = out.slice(2);
+  }
+  return out;
+}
 const EVENT_TYPE_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
 const MAX_EVENT_PAYLOAD_CHARS = 20_000;
 
@@ -98,8 +140,9 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 export function registerChatApi(app: FastifyInstance, d: ChatApiDeps): ChatSessionStore {
   const sessions = new ChatSessionStore(d.sessionTtlMs, d.maxSessions);
-  const enabled = d.apiKey.length >= 16;
-  if (!enabled) d.logger.warn("CHAT_API_KEY is unset or shorter than 16 chars - the chat API (/api/v1/chat) is disabled");
+  const currentKey = () => (typeof d.apiKey === "function" ? d.apiKey() : d.apiKey);
+  const isEnabled = () => currentKey().length >= 16;
+  if (!isEnabled()) d.logger.warn("CHAT_API_KEY is unset or shorter than 16 chars - the chat API (/api/v1/chat) is disabled");
 
   const cors = async (request: FastifyRequest, reply: FastifyReply) => {
     const origin = request.headers.origin;
@@ -116,10 +159,10 @@ export function registerChatApi(app: FastifyInstance, d: ChatApiDeps): ChatSessi
   const requireKey = async (request: FastifyRequest, reply: FastifyReply) => {
     await cors(request, reply);
     if (request.method === "OPTIONS") return reply.code(204).send();
-    if (!enabled) return reply.code(503).send({ error: "chat API disabled: set CHAT_API_KEY (at least 16 characters)" });
+    if (!isEnabled()) return reply.code(503).send({ error: "chat API disabled: set CHAT_API_KEY (at least 16 characters)" });
     const header = request.headers.authorization ?? "";
     const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-    if (!token || !timingSafeEqual(token, d.apiKey)) {
+    if (!token || !timingSafeEqual(token, currentKey())) {
       return reply.code(401).header("WWW-Authenticate", "Bearer").send({ error: "unauthorized" });
     }
   };
@@ -154,7 +197,7 @@ export function registerChatApi(app: FastifyInstance, d: ChatApiDeps): ChatSessi
     return reply.code(202).send({ ok: true, type, routines });
   });
 
-  app.get("/api/v1/health", { preHandler: cors }, async () => ({ ok: true, enabled, sessions: sessions.size() }));
+  app.get("/api/v1/health", { preHandler: cors }, async () => ({ ok: true, enabled: isEnabled(), sessions: sessions.size() }));
 
   app.post("/api/v1/chat", { preHandler: requireKey }, async (request, reply) => {
     const body = (request.body ?? {}) as ChatRequestBody;
@@ -170,8 +213,18 @@ export function registerChatApi(app: FastifyInstance, d: ChatApiDeps): ChatSessi
     }
 
     let session = sessions.get(sessionId);
+    let newSession = false;
     if (!session) {
-      session = { conv: d.agent.newConversation(sessionId, `chat:${userId}`, { channel: "chat" }), userId, lastActivity: Date.now(), busy: Promise.resolve() };
+      newSession = true;
+      const conv = d.agent.newConversation(sessionId, `chat:${userId}`, { channel: "chat" });
+      // The caller keeps the thread (the CRM stores every message); replay it so a session the
+      // server lost - restart, TTL - continues with the same context.
+      const history = normalizeHistory(body.history);
+      if (history.length) {
+        conv.messages.push(...history.map((t) => ({ role: t.role, content: t.content })));
+        d.logger.info({ sessionId, turns: history.length }, "chat session seeded from caller history");
+      }
+      session = { conv, userId, lastActivity: Date.now(), busy: Promise.resolve() };
       sessions.set(sessionId, session);
     }
     const current = session;
@@ -194,6 +247,7 @@ export function registerChatApi(app: FastifyInstance, d: ChatApiDeps): ChatSessi
       toolCalls: result.toolCalls,
       iterations: result.iterations,
       durationMs: result.durationMs,
+      newSession,
       ...(result.error ? { error: result.error } : {}),
     };
   });
